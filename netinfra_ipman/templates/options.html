@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Options</h2>
+{% if not user %}<div class="banner warning">Login is required to save changes.</div>{% endif %}
+<form method="post" action="/options" class="options-grid">
+  {% for key, value in config.__dict__.items() %}
+    <label>{{ key }}
+    {% if value is boolean %}
+      <input type="checkbox" name="{{ key }}" {% if value %}checked{% endif %} {% if not user %}disabled{% endif %}>
+    {% elif value is iterable and value is not string %}
+      <input name="{{ key }}" value="{{ value|join(',') }}" {% if not user %}disabled{% endif %}>
+    {% else %}
+      <input name="{{ key }}" value="{{ value }}" {% if not user %}disabled{% endif %}>
+    {% endif %}
+    </label>
+  {% endfor %}
+  <button {% if not user %}disabled{% endif %}>Save options</button>
+</form>
+{% endblock %}

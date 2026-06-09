@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+{% if bootstrap_password %}
+<div class="banner warning">Bootstrap admin password: <code>{{ bootstrap_password }}</code>. Change it after first login.</div>
+{% endif %}
+{% if not cache_available %}<div class="banner warning">Redis unavailable; using in-memory cache for this process.</div>{% endif %}
+{% for error in errors %}<div class="banner error">{{ error }}</div>{% endfor %}
+<section class="tabs">
+  {% for subnet in subnets %}
+    <a class="tab {% if subnet.cidr == selected %}active{% endif %}" href="/?subnet={{ subnet.cidr }}">{{ subnet.label }}</a>
+  {% endfor %}
+</section>
+{% if selected %}
+<section class="actions">
+  <form method="post" action="/refresh">
+    <input type="hidden" name="subnet" value="{{ selected }}">
+    <button>Refresh status</button>
+  </form>
+  {% if user %}
+  <form method="post" action="/scan">
+    <input type="hidden" name="subnet" value="{{ selected }}">
+    <label><input type="checkbox" name="confirm_large" value="true"> Confirm large subnet</label>
+    <button>Scan subnet</button>
+  </form>
+  {% endif %}
+</section>
+<table>
+<thead><tr><th>IP</th><th>Hostname</th><th>FQDN</th><th>MAC</th><th>Comment</th><th>Last checked</th><th>Status</th><th>Action</th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr class="{{ row.status.severity.value if row.status.severity.value else row.status.severity }}">
+  <td>{{ row.status.ip }}</td>
+  {% if row.record %}
+    <td>{{ row.record.hostname }}</td><td>{{ row.record.fqdn }}</td><td>{{ row.record.mac }}</td><td>{{ row.record.comment }}</td>
+  {% else %}
+    <td></td><td></td><td></td><td></td>
+  {% endif %}
+  <td>{{ row.status.checked_at }}</td>
+  <td title="{{ row.status.tooltip }}"><span class="dot {{ row.status.severity.value if row.status.severity.value else row.status.severity }}"></span> {{ row.status.reason }}</td>
+  <td>{% if user and not row.record %}<a href="/add?ip={{ row.status.ip }}">Add</a>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+<section>
+  <h2>Scan jobs</h2>
+  {% for job in jobs %}
+    <div class="job"><strong>{{ job.cidr }}</strong> {{ job.status }} {{ job.progress }}/{{ job.total }}{% if user and job.status == 'running' %}<form method="post" action="/scan/{{ job.id }}/cancel"><button>Cancel</button></form>{% endif %}</div>
+  {% else %}<p>No scan jobs yet.</p>{% endfor %}
+</section>
+{% endblock %}

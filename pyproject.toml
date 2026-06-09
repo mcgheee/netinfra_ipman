@@ -1,0 +1,37 @@
+[project]
+name = "netinfra-ipman"
+version = "0.1.0"
+description = "NetInfra.yml backed IP management web application"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
+  "ruamel.yaml>=0.18",
+  "dnspython>=2.6",
+  "ping3>=4.0",
+  "getmac>=0.9",
+  "redis>=5.0",
+  "passlib>=1.7",
+  "itsdangerous>=2.2",
+  "authlib>=1.3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+netinfra-ipman = "netinfra_ipman.main:run"
+netinfra-ipman-init = "netinfra_ipman.security:init_admin_cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["netinfra_ipman*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

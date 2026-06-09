@@ -1,0 +1,19 @@
+---
+subnets:
+  - vlan_id: 10
+    env: dev
+    cidr: 10.10.10.0/29
+Hosts:
+  - Name: dns1
+    Records:
+      - ZoneName: example.test
+        Target: 10.10.10.2
+        MAC: 02:37:f8:6c:15:7a
+        Comment: DNS resolver
+  - Name: disabled
+    Records:
+      - ZoneName: example.test
+        Target: 10.10.10.3
+        RRType: no_dns
+        MAC: 02:00:e0:47:63:eb
+        Comment: No DNS expected

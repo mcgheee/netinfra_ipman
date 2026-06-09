@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetInfra IP Manager</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+</head>
+<body>
+<header>
+  <h1>NetInfra IP Manager</h1>
+  <nav>
+    <a href="/">Subnets</a>
+    <a href="/options">Options</a>
+    {% if user %}
+      <span>Signed in as {{ user }}</span>
+      <form action="/logout" method="post"><button>Logout</button></form>
+    {% else %}
+      <a href="/login">Login</a>
+    {% endif %}
+  </nav>
+</header>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

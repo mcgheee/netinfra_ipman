@@ -1,0 +1,33 @@
+:root { color-scheme: light dark; font-family: Inter, system-ui, sans-serif; }
+body { margin: 0; background: #f6f7fb; color: #172033; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; background: #16213e; color: white; }
+header h1 { margin: 0; font-size: 1.25rem; }
+nav { display: flex; align-items: center; gap: 1rem; }
+nav a, nav button { color: white; }
+nav form { display: inline; }
+main { padding: 1rem 1.5rem; }
+.banner { padding: .75rem 1rem; border-radius: .4rem; margin-bottom: .8rem; }
+.error { background: #ffe5e5; color: #8a1010; }
+.warning { background: #fff6d7; color: #6f5200; }
+.tabs { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+.tab { padding: .6rem .85rem; border-radius: .4rem; background: white; color: #172033; text-decoration: none; border: 1px solid #d5d9e2; }
+.tab.active { background: #2e5aac; color: white; }
+.actions { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px #0001; }
+th, td { padding: .55rem .7rem; border-bottom: 1px solid #e7e9ef; text-align: left; }
+th { background: #eef2f7; position: sticky; top: 0; }
+tr.red { background: #fff2f2; }
+tr.yellow { background: #fffbed; }
+.dot { display: inline-block; width: .75rem; height: .75rem; border-radius: 50%; background: #b9c0ca; margin-right: .35rem; }
+.dot.green { background: #1f9d55; }
+.dot.yellow { background: #e5a900; }
+.dot.red { background: #d82d2d; }
+.dot.neutral { background: #c8ced8; }
+.stack { display: grid; gap: .8rem; max-width: 34rem; }
+.stack label, .options-grid label { display: grid; gap: .25rem; }
+input { padding: .5rem; border: 1px solid #c8ced8; border-radius: .35rem; }
+button { cursor: pointer; border: 0; border-radius: .35rem; padding: .55rem .8rem; background: #2e5aac; color: white; }
+.diff { overflow: auto; padding: 1rem; background: #101827; color: #e6edf3; border-radius: .4rem; }
+.options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
+.job { display: flex; gap: 1rem; align-items: center; padding: .5rem 0; }
+@media (prefers-color-scheme: dark) { body { background: #0f172a; color: #e5e7eb; } table, .tab { background: #111827; color: #e5e7eb; } th { background: #1f2937; } }

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Add discovered IP</h2>
+<form method="post" action="/add/preview" class="stack">
+  <label>Name <input name="name" required></label>
+  <label>ZoneName <input name="zone_name" required></label>
+  <label>Target <input name="target" value="{{ ip }}" required></label>
+  <label>MAC <input name="mac" placeholder="optional"></label>
+  <label>Comment <input name="comment" placeholder="Placeholder when MAC is empty"></label>
+  <button>Preview diff</button>
+</form>
+{% endblock %}

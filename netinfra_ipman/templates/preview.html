@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Review write-back diff</h2>
+<pre class="diff">{{ diff }}</pre>
+<form method="post" action="/add/commit">
+  {% for key, value in form.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+  <button>Confirm write</button>
+  <a href="/">Cancel</a>
+</form>
+{% endblock %}

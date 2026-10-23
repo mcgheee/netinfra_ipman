@@ -1,0 +1,52 @@
+<div class="table-scroll">
+<table>
+<thead><tr><th>IP</th><th>Authoritative identities</th><th>Expected checks</th><th>Observed evidence</th><th>Status</th></tr></thead>
+<tbody>
+{% for row in rows %}
+{% set group = row.group %}
+{% set status = row.status %}
+{% set severity = status.severity.value|default(status.severity) %}
+<tr class="{{ severity }}" data-ip="{{ status.ip }}">
+  <td>{{ status.ip }}</td>
+  <td>
+    {% if group %}
+      {% if group.conflict %}<strong>Conflicting definitions — no authority selected</strong>{% endif %}
+      <div>{{ group.hostnames|join(', ') }}</div>
+      <details><summary>All {{ group.records|length }} definitions</summary>
+        <ul>{% for record in group.records %}
+          <li><a href="/hosts/{{ record.host_index }}">{{ record.raw_host.get('Name', '(unnamed)') }}</a>, record {{ record.record_index + 1 }}
+            {% if record in group.preferred %}(preferred){% else %}(retained, not authoritative){% endif %}
+            <div>Source: {{ record.raw_record.get('Source', '—') }}; AltHostName: {{ record.raw_record.get('AltHostName', '—') }};
+              ZoneName: {{ record.raw_record.get('ZoneName', '—') }}; RRType: {{ record.raw_record.get('RRType', 'A') }};
+              MAC: {{ record.raw_record.get('MAC', '—') }}</div>
+            {% if record.comment %}<div>{{ record.comment }}</div>{% endif %}
+          </li>
+        {% endfor %}</ul>
+      </details>
+    {% else %}No eligible file assignment{% endif %}
+  </td>
+  <td>
+    {% if group %}
+      <div>MAC: {% if group.conflict %}configuration conflict{% else %}{{ group.mac or 'not configured (comparison skipped)' }}{% endif %}</div>
+      {% for name in group.dns_names %}
+        <div>DNS {{ name }} → {{ inventory.expected_dns.get(name, [])|sort|join(', ') }}</div>
+      {% else %}<div>DNS: {% if group.preferred|rejectattr('no_dns')|list %}owner missing (invalid configuration){% else %}not applicable (no_dns){% endif %}</div>{% endfor %}
+    {% else %}No intended DNS/MAC checks{% endif %}
+  </td>
+  <td>
+    {% if status.checked_at %}
+      <div>Checked: {{ status.checked_at }}</div>
+      <div>Ping: {% if status.ping_ok is sameas true %}responded{% elif status.ping_ok is sameas false %}no response / probe failed{% else %}not observed{% endif %}</div>
+      <div>MAC: {{ status.mac_found or 'unavailable / not requested' }}</div>
+      {% for check in status.dns_checks %}
+        <div>DNS {{ check.name }} → {% if check.observed is none %}unavailable{% else %}{{ check.observed|join(', ') or 'no A answers' }}{% endif %}{% if check.error %}; {{ check.error }}{% endif %}</div>
+      {% endfor %}
+      {% if status.source_revision %}<details><summary>Source revision</summary><code>{{ status.source_revision }}</code></details>{% endif %}
+    {% else %}No observations{% endif %}
+  </td>
+  <td><span class="dot {{ severity }}"></span><strong>{{ status.reason }}</strong><p>{{ status.tooltip }}</p></td>
+</tr>
+{% else %}<tr><td colspan="5">No addresses in this view.</td></tr>{% endfor %}
+</tbody>
+</table>
+</div>

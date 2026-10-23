@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from ipaddress import ip_address
+from ipaddress import IPv4Network, ip_address, ip_network
 import math
 import os
 from pathlib import Path
@@ -26,6 +26,7 @@ class AppConfig:
     dns_timeout: float = 2.0
     dns_lifetime: float = 2.0
     dns_servers: list[str] = field(default_factory=list)
+    subnet_dns_servers: dict[str, list[str]] = field(default_factory=dict)
     large_subnet_prefix: int = 24
     max_subnet_prefix: int = 16
     git_enabled: bool = False
@@ -59,6 +60,12 @@ class AppConfig:
                 valid = type(value) in (int, float)
             elif annotation == list[str]:
                 valid = isinstance(value, list) and all(type(item) is str for item in value)
+            elif annotation == dict[str, list[str]]:
+                valid = isinstance(value, dict) and all(
+                    type(key) is str and isinstance(servers, list)
+                    and all(type(server) is str for server in servers)
+                    for key, servers in value.items()
+                )
             else:
                 valid = type(value) is annotation
             if not valid:
@@ -99,6 +106,18 @@ class AppConfig:
                 ip_address(server)
             except ValueError as exc:
                 raise ValueError(f"dns_servers contains an invalid IP address: {server!r}") from exc
+        for cidr, servers in self.subnet_dns_servers.items():
+            try:
+                network = ip_network(cidr, strict=True)
+            except ValueError as exc:
+                raise ValueError(f"subnet_dns_servers has an invalid canonical CIDR: {cidr!r}") from exc
+            if not isinstance(network, IPv4Network) or str(network) != cidr:
+                raise ValueError("subnet_dns_servers keys must be canonical IPv4 CIDRs")
+            for server in servers:
+                try:
+                    ip_address(server)
+                except ValueError as exc:
+                    raise ValueError(f"subnet_dns_servers contains an invalid resolver IP: {server!r}") from exc
 
         sqlite_path = Path(self.sqlite_path).resolve()
         for name in ("netinfra_path", "config_path", "admin_file", "audit_log_file"):

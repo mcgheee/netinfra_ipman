@@ -7,6 +7,8 @@
     <label>{{ key }}
     {% if value is boolean %}
       <input type="checkbox" name="{{ key }}" {% if value %}checked{% endif %} {% if not user %}disabled{% endif %}>
+    {% elif value is mapping %}
+      <textarea name="{{ key }}" rows="4" {% if not user %}disabled{% endif %}>{{ value|tojson }}</textarea>
     {% elif value is iterable and value is not string %}
       <input name="{{ key }}" value="{{ value|join(',') }}" {% if not user %}disabled{% endif %}>
     {% else %}

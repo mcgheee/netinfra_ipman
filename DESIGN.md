@@ -254,28 +254,28 @@ network observations.
 
 ## Implementation gaps
 
-Phase 1 of the implementation plan is delivered. The table distinguishes the
-remaining starter gaps from completed foundation work; these are implementation
-differences, not undecided architecture choices.
+Phases 1–2 of the implementation plan are delivered. The table distinguishes
+remaining gaps from completed foundation/reconciliation work; these are
+implementation differences, not undecided architecture choices.
 
 | Area | Current behavior | Required change |
 | --- | --- | --- |
-| Inventory | Requires MAC; flags repeated IPs; reduces rows to one record. | Optional MAC, grouping, authority rules, conflict diagnostics, outliers. |
-| DNS identity | Uses `Source`, `HostName`, then `Name`; strips trailing dots early. | Agreed `AltHostName` precedence, absolute-name and token handling. |
+| Inventory | Optional MACs, grouped authority/conflicts, retained definitions, and visible outliers. | Foundation for full reviewed host editing is delivered. |
+| DNS identity | `Source`, `AltHostName`, then `Name`; absolute/relative handling and NetInfra tokens. | Compatibility behavior delivered; original values remain intact. |
 | Editing | Can append a host only. | Full host editing/deletion, advanced YAML, bulk import. |
-| Validation | Skips some invalid data and has minimal field checks. | Visible diagnostics and safe validation without discarding data. |
+| Validation | Visible structural/semantic diagnostics without discarding raw data. | Enforce full host-edit validation on preview/apply in phase 4. |
 | Saving | Direct file writes and unbound previews; backups in the file directory. | Revision-bound previews, serialized atomic saves, external backups, Git outcome handling. |
-| Scanning | Single durable job runner with bounded streamed probes and restart recovery; web `/16` cutoff remains. | Full scan scopes/modes, rate limits, confirmation policy, and scheduling. |
+| Scanning | Central durable runner for full/known checks with snapshot revisions, bounded probes, and restart recovery; web full-scan `/16` cutoff remains. | Remaining scope/mode controls, rate limits, confirmation policy, and scheduling. |
 | Scheduling | Durable disabled-by-default definitions; no dispatch/UI. | Interval/calendar schedules and overlap handling. |
-| Results | Discovery results are not merged into the address table. | Reconciled latest observations and visible undocumented responders. |
-| Status | Ping/DNS failures are combined as errors; no freshness policy. | Distinguish mismatch, inconclusive evidence, stale results, and scan failures. |
-| Storage | SQLite retains latest observations, schedules, and bounded job summaries. | Complete reconciliation/coverage and scheduling integration in later phases. |
-| UI scale | Renders every usable IP in a subnet. | Pagination, filtering, progressive scan updates. |
+| Results | Raw observations reconcile per address; undocumented responders are visible with timestamps. | Compact discovery coverage, DHCP context, and reviewed host creation. |
+| Status | Exact DNS sets and MAC comparison; unavailable evidence is incomplete; relevant edits mark evidence stale. | Age/schedule-based freshness and administrator override. |
+| Storage | SQLite schema 2 retains raw latest observations, schedules, and bounded jobs; phase-1 upgrade removes cached intended values/verdicts. | Coverage and scheduling integration in later phases. |
+| UI scale | Address and outlier views render bounded pages with direct IPv4 arithmetic. | Search/filtering and progressive scan updates. |
 | Authentication | CLI-only provisioning; still trusts an unsigned username cookie. | Verified sessions, CLI recovery, authorization, CSRF protection. |
 | SSO | Keycloak/Duo configuration fields without working integration. | Working OIDC; standalone Duo integration is not part of this design. |
-| Access/settings | Anonymous viewing is fixed; refresh can trigger probes anonymously; settings expose configuration values. | Configurable viewing, authenticated probes, protected and redacted settings. |
+| Access/settings | Probes require login, but username cookies remain unsigned; anonymous viewing is fixed and settings expose configuration values. | Verified sessions, configurable viewing, authorization, and protected/redacted settings. |
 | Lifecycle | Explicit factory/lifespan initialization and awaited scan/storage/audit cleanup. | Foundation delivered; one worker required. |
-| Tests | 82 passing tests, including foundation lifecycle, persistence, cancellation, and recovery. | Remaining inventory, authorization, write safety, scheduling, and UI acceptance coverage. |
+| Tests | 191 passing tests, including upstream inventory compatibility, reconciliation, migration, lifecycle, and cancellation. | Authorization, write safety, scheduling, and complete UI acceptance coverage. |
 
 ## Deployment configuration still required
 
@@ -294,5 +294,5 @@ preserve unrelated NetInfra content, enforce all roles in both anonymous-view
 modes, and remain responsive with large target ranges using bounded resources.
 
 Tests use simulated probes and controlled networks. Initial inspection lacked
-pytest; phase-1 verification now passes 82 tests. This does not establish full v1
+pytest; phase-2 verification now passes 191 tests. This does not establish full v1
 acceptance or make the remaining starter authentication/write paths safe to deploy.

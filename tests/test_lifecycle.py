@@ -36,7 +36,7 @@ def test_restart_retains_runtime_without_provisioning_admin(tmp_path):
     app = create_app(config)
     with TestClient(app) as client:
         store = app.state.services.store
-        client.portal.call(store.set, 'status:192.0.2.1:host.example', {'ip': '192.0.2.1', 'reason': 'No response'})
+        client.portal.call(store.set, 'observation:192.0.2.1', {'ip': '192.0.2.1', 'ping_error': 'No response'})
         client.portal.call(store.save_schedule, {'id': 'nightly', 'cidr': '192.0.2.0/30'})
         client.portal.call(store.save_job, {'id': 'interrupted', 'cidr': '192.0.2.0/30', 'status': 'running',
                                           'progress': 1, 'total': 2, 'started_at': '2026-01-01T00:00:00+00:00'})
@@ -47,7 +47,7 @@ def test_restart_retains_runtime_without_provisioning_admin(tmp_path):
     restarted = create_app(config)
     with TestClient(restarted) as client:
         store = restarted.state.services.store
-        assert client.portal.call(store.get, 'status:192.0.2.1:host.example')['reason'] == 'No response'
+        assert client.portal.call(store.get, 'observation:192.0.2.1')['ping_error'] == 'No response'
         assert client.portal.call(store.list_schedules)[0]['id'] == 'nightly'
         job = client.portal.call(store.list_jobs)[0]
         assert job['incomplete'] is True

@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 import pytest
 
@@ -17,15 +18,13 @@ def test_explicit_initialization_and_reopen_preserve_runtime_state(tmp_path):
     with pytest.raises(RuntimeError, match="not initialized"):
         store.get("missing")
     store.initialize()
-    store.set("status:192.0.2.1:host.example", {"ping_ok": True})
-    store.set("observation:192.0.2.1", {"responding": True, "source_revision": "rev"})
+    store.set("observation:192.0.2.1", {"ping_ok": True, "source_revision": "rev"})
     store.save_schedule({"id": "daily", "scope": "192.0.2.0/24", "custom": {"hour": 12}})
     store.save_schedule({"id": "enabled", "enabled": True})
     store.save_job(job("completed"))
     store.close()
     reopened = RuntimeStore(path)
     reopened.initialize()
-    assert reopened.get("status:192.0.2.1:host.example") == {"ping_ok": True}
     assert reopened.get("observation:192.0.2.1")["source_revision"] == "rev"
     assert reopened.get("missing") is None
     assert reopened.list_schedules() == [
@@ -115,4 +114,42 @@ def test_initialization_creates_runtime_directory(tmp_path):
     assert store.get("key") == {"value": True}
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == RuntimeStore.SCHEMA_VERSION
+    store.close()
+
+
+def test_phase_one_cached_status_migrates_to_latest_raw_evidence(tmp_path):
+    path = tmp_path / "runtime.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            CREATE TABLE observations (key TEXT PRIMARY KEY, payload TEXT NOT NULL, source_revision TEXT);
+            CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at TEXT NOT NULL,
+                               payload TEXT NOT NULL, source_revision TEXT);
+            CREATE TABLE schedules (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            PRAGMA user_version = 1;
+        """)
+        old = {"ip": "192.0.2.1", "fqdn": "old.example", "mac": "aa:bb:cc:dd:ee:ff",
+               "checked_at": "2026-01-01T00:00:00+00:00", "ping_ok": False, "severity": "red"}
+        newer = {**old, "checked_at": "2026-01-02T00:00:00+00:00", "ping_ok": True,
+                 "mac_found": "aa:bb:cc:dd:ee:ff"}
+        ping = {"ip": "192.0.2.2", "checked_at": "2026-01-01T00:00:00+00:00",
+                "responding": False, "error": "Ping timeout", "source_revision": "old-revision",
+                "severity": "neutral", "managed": True}
+        for key, payload in [("status:192.0.2.1:old.example", old),
+                             ("status:192.0.2.1:new.example", newer), ("observation:192.0.2.2", ping)]:
+            connection.execute("INSERT INTO observations VALUES (?, ?, ?)", (key, json.dumps(payload), None))
+    store = RuntimeStore(path)
+    store.initialize()
+    evidence = store.get("observation:192.0.2.1")
+    assert evidence["ping_ok"] is True
+    assert evidence["mac_found"] == "aa:bb:cc:dd:ee:ff"
+    assert evidence["checked_at"] == newer["checked_at"]
+    assert not {"fqdn", "mac", "severity", "expectation_fingerprint"} & evidence.keys()
+    assert store.get("status:192.0.2.1:old.example") is None
+    assert store.get("status:192.0.2.1:new.example") is None
+    assert store.get("observation:192.0.2.2")["ping_error"] == "Ping timeout"
+    assert store.get("observation:192.0.2.2")["ping_ok"] is False
+    assert store.get("observation:192.0.2.2")["source_revision"] == "old-revision"
+    store.close()
+    store.initialize()
+    assert store.get("observation:192.0.2.1") == evidence
     store.close()

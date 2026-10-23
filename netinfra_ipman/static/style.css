@@ -31,3 +31,10 @@ button { cursor: pointer; border: 0; border-radius: .35rem; padding: .55rem .8re
 .options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
 .job { display: flex; gap: 1rem; align-items: center; padding: .5rem 0; }
 @media (prefers-color-scheme: dark) { body { background: #0f172a; color: #e5e7eb; } table, .tab { background: #111827; color: #e5e7eb; } th { background: #1f2937; } }
+.table-scroll { overflow-x: auto; }
+.table-scroll td { vertical-align: top; min-width: 9rem; overflow-wrap: anywhere; }
+.table-scroll td p { margin: .4rem 0; }
+.table-scroll ul { padding-left: 1.2rem; }
+.pagination { margin: 1rem 0; color: inherit; }
+.pagination a { color: inherit; }
+textarea { padding: .5rem; font: inherit; }

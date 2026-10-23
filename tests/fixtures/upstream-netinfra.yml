@@ -1,0 +1,125 @@
+# Focused subset of NICS-UTK/netinfra_monorepo NetInfra.yml, unchanged values.
+# Source: https://raw.githubusercontent.com/NICS-UTK/netinfra_monorepo/e673611cf76e1188c7bdab9064a0b56fa9be7f62/ansible/group_vars/NetInfra.yml
+# Upstream: "star" is rendered as "*"; "___" is removed in Bind owners.
+---
+subnets:
+  - vlan_id: 192
+    env: prod
+    cidr: 192.168.0.0/25
+    dns_servers: "10.10.10.13, 10.10.10.14, 8.8.8.8"
+    subnet_mask: 255.255.255.0
+    routers: 192.168.0.1
+    next_server: 192.168.0.11
+    pools:
+      - "192.168.0.100-192.168.0.200"
+  - vlan_id: 10
+    env: dev
+    cidr: 10.10.10.0/24
+    required_client_classes:
+      - "development"
+Hosts:
+  - Name: my.company.com.
+    Records:
+      - ZoneName: my.company.com
+        Target: 192.168.0.101
+        TTL: 600
+        Comment: Primary Domain
+      - ZoneName: my.company.com
+        Source: my.company.com.
+        RRType: TXT
+        Target: 'duo_sso_verification=arandomstringofnumbers'
+        Comment: DUO_Verification
+  - Name: dns1
+    Records:
+      - ZoneName: my.company.com
+        Target: 10.10.10.13
+        MAC: 02:37:f8:6c:15:7a
+        Comment: DNS Internal Caching Resolver
+        DHCP_Options:
+          - interface_mtu: 9000
+          - domain_name_servers: "10.10.10.13, 10.10.10.14"
+  - Name: bastion
+    Records:
+      - ZoneName: my.company.com
+        Target: 192.168.0.24
+        MAC: 02:fd:98:60:a4:7a
+        Comment: Bastion
+      - ZoneName: my.company.com
+        Source: login
+        RRType: CNAME
+        Target: bastion
+        Comment: Aliases
+  - Name: login
+    Records:
+      - ZoneName: my.company.com
+        Target: 192.168.0.25
+        MAC: 02:dd:da:ca:05:77
+        Comment: Public Login
+      - ZoneName: subsidiary.company.com
+        Target: 192.168.0.25
+        Comment: Public Login
+      - ZoneName: subsidiary.company.com
+        Source: login
+        RRType: TXT
+        Target: 'arandomstringofalphanumericcharacters'
+        Comment: App Token
+  - Name: k8s
+    Records:
+      - ZoneName: internal.company.com
+        Target: 10.10.10.76
+        MAC: 02:bc:07:20:6a:c3
+        Comment: kubernetes
+      - ZoneName: internal.company.com
+        Target: 10.10.10.90
+        RRType: no_dns
+        MAC: 02:00:e0:47:63:eb
+        Block_DHCP: true
+        Comment: "Disabled Feb 26 2026"
+      - ZoneName: my.company.com
+        AltHostName: kub-mgmt
+        Target: 10.10.10.90
+        RRType: no_dns
+        Comment: "Disabled Feb 26 2026"
+  - Name: _etcd-server-ssl._tcp.kub-prod
+    Records:
+      - ZoneName: my.company.com
+        Target: etcd-0.k8s.my.company.com
+        RRType: SRV
+        Priority: 0
+        Weight: 10
+        Port: 2380
+        TTL: 86400
+  - Name: management
+    Records:
+      - ZoneName: internal.company.com
+        Target: 10.10.10.10
+        MAC: 02:94:4f:49:3d:ee
+        Comment: Management Node
+      - ZoneName: subsidiary.company.com
+        Target: 10.10.10.10
+        Comment: Management Node
+  - Name: monitoring
+    Records:
+      - ZoneName: internal.company.com
+        Target: 10.10.8.88
+        MAC: 02:b7:67:66:fc:08
+        Comment: Monitoring
+      - ZoneName: internal.company.com
+        Source: prometheus
+        RRType: CNAME
+        Target: monitoring
+        Comment: Aliases
+      - ZoneName: my.company.com
+        Target: 192.168.0.88
+        Comment: monitoring
+  - Name: serverA
+    Records:
+      - ZoneName: my.company.com
+        Target: 192.168.1.200
+        MAC: 02:38:20:5d:47:da
+        Comment: Service Host
+  - Name: dev
+    Records:
+      - ZoneName: my.company.com
+        Target: 10.10.10.201
+        Comment: Internal Dev Site

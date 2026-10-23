@@ -1,36 +1,35 @@
 from __future__ import annotations
 
 import difflib
-import hashlib
+import json
 import os
 import shutil
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
-from ipaddress import ip_network
+from ipaddress import IPv4Address, IPv4Network, collapse_addresses, ip_network
 from pathlib import Path
+from io import StringIO
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
+from ruamel.yaml import YAML
 
 from .audit import AuditLogger
 from .persistence import RuntimeStore
-from .checks import check_many, resolver_available
+from .checks import reconcile
 from .config import AppConfig, load_config, save_config
 from .gitops import commit_changes, ensure_clean_checkout
-from .models import CheckResult, Severity
+from .models import Inventory
 from .netinfra import (
     NetInfraError,
     append_discovered_host,
-    duplicate_fqdn_ip_conflicts,
-    duplicate_ip_map,
-    iter_managed_records,
-    iter_subnets,
     load_netinfra,
+    load_inventory,
     save_netinfra,
 )
 from .scanner import ScanManager
@@ -95,62 +94,69 @@ def source_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def load_state(config: AppConfig) -> tuple[dict[str, Any] | None, list[str]]:
-    errors: list[str] = []
-    data: dict[str, Any] | None = None
+def load_state(config: AppConfig) -> tuple[Inventory | None, list[str]]:
     try:
-        data = load_netinfra(config.netinfra_path)
+        return load_inventory(config.netinfra_path), []
     except NetInfraError as exc:
-        errors.append(str(exc))
-    if data is not None and not resolver_available(config):
-        errors.append("DNS resolver is unavailable")
-    return data, errors
+        return None, [str(exc)]
 
 
-def row_status(record, duplicates: dict[str, int], fqdn_conflicts: set[tuple[str, str]], store: RuntimeStore) -> dict[str, Any]:
-    cached = store.get(f"status:{record.ip}:{record.fqdn}")
-    if cached:
-        cached["severity"] = Severity(cached.get("severity", Severity.neutral.value))
-        result = CheckResult(**cached)
+def declared_scope(cidr: str, inventory: Inventory) -> IPv4Network:
+    try:
+        network = ip_network(cidr, strict=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid IPv4 subnet") from exc
+    declared = collapse_addresses(ip_network(subnet.cidr) for subnet in inventory.subnets)
+    if network.version != 4 or not any(network.subnet_of(parent) for parent in declared):
+        raise HTTPException(status_code=400, detail="Targets must be within declared IPv4 subnets")
+    return network
+
+
+def address_row(ip: str, inventory: Inventory, config: AppConfig, store: RuntimeStore) -> dict[str, Any]:
+    group = inventory.groups.get(ip)
+    observation = store.get(f"observation:{ip}")
+    if group is not None:
+        status = reconcile(group, inventory, config, observation)
     else:
-        result = CheckResult.blank(record.ip)
-    if record.ip in duplicates:
-        result.severity = Severity.red
-        result.reason = "Duplicate IP"
-        result.tooltip = f"{duplicates[record.ip]} records define IP {record.ip}."
-    if (record.fqdn.lower(), record.ip) in fqdn_conflicts:
-        result.severity = Severity.red
-        result.reason = "Duplicate FQDN"
-        result.tooltip = f"Multiple records define {record.fqdn} for {record.ip}."
-    return {"record": record, "status": result}
+        responding = observation is not None and observation.get("ping_ok") is True
+        status = {
+            "ip": ip, "severity": "yellow" if responding else "neutral",
+            "reason": "Undocumented responder" if responding else "Unchecked",
+            "tooltip": "No eligible file assignment. Silence is not evidence that this IP is free.",
+            "checked_at": observation.get("checked_at", "") if observation else "",
+            "ping_ok": observation.get("ping_ok") if observation else None,
+            "mac_found": None, "mac_ok": None, "dns_checks": [],
+            "source_revision": observation.get("source_revision") if observation else None,
+        }
+    return {"group": group, "status": status}
 
 
-def subnet_rows(cidr: str, records: list, duplicates: dict[str, int], fqdn_conflicts: set[tuple[str, str]], store: RuntimeStore) -> list[dict[str, Any]]:
-    by_ip = {record.ip: record for record in records}
-    rows: list[dict[str, Any]] = []
-    network = ip_network(cidr, strict=False)
-    for ip in network.hosts():
-        ip_text = str(ip)
-        if ip_text in by_ip:
-            rows.append(row_status(by_ip[ip_text], duplicates, fqdn_conflicts, store))
-        else:
-            rows.append({"record": None, "status": CheckResult.blank(ip_text)})
-    return rows
+PAGE_SIZE = 256
+
+
+def subnet_rows(cidr: str, inventory: Inventory, config: AppConfig, store: RuntimeStore, page: int) -> tuple[list[dict[str, Any]], int]:
+    network = declared_scope(cidr, inventory)
+    total = network.num_addresses if network.prefixlen >= 31 else network.num_addresses - 2
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page > pages:
+        raise HTTPException(status_code=404, detail="Address page does not exist")
+    first = int(network.network_address) + (0 if network.prefixlen >= 31 else 1)
+    start = (page - 1) * PAGE_SIZE
+    rows = [
+        address_row(str(IPv4Address(first + offset)), inventory, config, store)
+        for offset in range(start, min(start + PAGE_SIZE, total))
+    ]
+    return rows, pages
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, subnet: str | None = None):
+async def index(request: Request, subnet: str | None = None, page: int = Query(1, ge=1)):
     services = request.app.state.services
     config, store, scanner = services.config, services.store, services.scanner
-    data, errors = load_state(config)
-    records = iter_managed_records(data) if data else []
-    subnets = iter_subnets(data) if data else []
+    inventory, errors = load_state(config)
+    subnets = inventory.subnets if inventory else []
     selected = subnet or (subnets[0].cidr if subnets else None)
-    duplicates = duplicate_ip_map(records)
-    fqdn_conflicts = duplicate_fqdn_ip_conflicts(records)
-    if duplicates:
-        errors.append("Duplicate IPs were found in NetInfra.yml")
-    rows = subnet_rows(selected, records, duplicates, fqdn_conflicts, store) if selected else []
+    rows, pages = subnet_rows(selected, inventory, config, store, page) if selected and inventory else ([], 1)
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -160,26 +166,62 @@ async def index(request: Request, subnet: str | None = None):
             "subnets": subnets,
             "selected": selected,
             "rows": rows,
+            "inventory": inventory,
+            "page": page,
+            "pages": pages,
             "jobs": scanner.as_dicts(),
             "user": current_user(request),
         },
     )
 
 
-@router.post("/refresh")
-async def refresh(request: Request, subnet: str = Form(...), user: str | None = Depends(current_user)):
+@router.get("/outliers", response_class=HTMLResponse)
+async def outliers(request: Request, page: int = Query(1, ge=1)):
     services = request.app.state.services
-    config, store, audit = services.config, services.store, services.audit
-    data, _ = load_state(config)
-    if not data:
-        return RedirectResponse("/", status_code=303)
-    network = ip_network(subnet, strict=False)
-    records = [record for record in iter_managed_records(data) if record.ip_address in network]
-    results = await check_many(records, config)
-    for record in records:
-        key = f"status:{record.ip}:{record.fqdn}"
-        store.set(key, results[record.ip])
-    audit.record(user or "anonymous", source_ip(request), "refresh", f"Refreshed {len(records)} records in {subnet}")
+    inventory, errors = load_state(services.config)
+    groups = inventory.outliers if inventory else []
+    pages = max(1, (len(groups) + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page > pages:
+        raise HTTPException(status_code=404, detail="Outlier page does not exist")
+    rows = [
+        address_row(group.ip, inventory, services.config, services.store)
+        for group in groups[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+    ]
+    return templates.TemplateResponse(request, "outliers.html", {
+        "inventory": inventory, "errors": errors, "rows": rows,
+        "page": page, "pages": pages, "user": current_user(request),
+    })
+
+
+@router.get("/hosts/{host_index}", response_class=HTMLResponse)
+async def host_details(request: Request, host_index: int):
+    try:
+        data = load_netinfra(request.app.state.services.config.netinfra_path)
+    except NetInfraError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    hosts = data.get("Hosts")
+    if not isinstance(hosts, list) or not 0 <= host_index < len(hosts):
+        raise HTTPException(status_code=404, detail="Host does not exist")
+    output = StringIO()
+    YAML().dump(hosts[host_index], output)
+    return templates.TemplateResponse(request, "host.html", {
+        "host_index": host_index, "host_yaml": output.getvalue(), "user": current_user(request),
+    })
+
+
+@router.post("/refresh")
+async def refresh(request: Request, subnet: str = Form(...), user: str = Depends(require_user)):
+    services = request.app.state.services
+    config, scanner, audit = services.config, services.scanner, services.audit
+    inventory, errors = load_state(config)
+    if inventory is None:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    network = declared_scope(subnet, inventory)
+    try:
+        job = await scanner.refresh(str(network), inventory)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record(user, source_ip(request), "refresh", f"Refresh job {job.id}: {job.status}, {job.progress}/{job.total} addresses")
     return RedirectResponse(f"/?subnet={subnet}", status_code=303)
 
 
@@ -187,16 +229,16 @@ async def refresh(request: Request, subnet: str = Form(...), user: str | None = 
 async def scan(request: Request, subnet: str = Form(...), confirm_large: bool = Form(False), user: str = Depends(require_user)):
     services = request.app.state.services
     config, scanner, audit = services.config, services.scanner, services.audit
-    network = ip_network(subnet, strict=False)
+    inventory, errors = load_state(config)
+    if inventory is None:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    network = declared_scope(subnet, inventory)
     if network.prefixlen < config.max_subnet_prefix:
         raise HTTPException(status_code=400, detail="Subnet too large")
     if network.prefixlen < config.large_subnet_prefix and not confirm_large:
         raise HTTPException(status_code=400, detail="Large subnet scan requires confirmation")
-    data, _ = load_state(config)
-    records = iter_managed_records(data or {})
     try:
-        revision = hashlib.sha256(Path(config.netinfra_path).read_bytes()).hexdigest() if data is not None else None
-        job = scanner.start(subnet, {record.ip for record in records}, source_revision=revision)
+        job = scanner.start(str(network), inventory)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     audit.record(user, source_ip(request), "scan", f"Started scan {job.id} for {subnet}")
@@ -300,6 +342,8 @@ async def options_save(request: Request, user: str = Depends(require_user)):
                 setattr(config, key, int(value))
             elif isinstance(current, float):
                 setattr(config, key, float(value))
+            elif isinstance(current, dict):
+                setattr(config, key, json.loads(str(value)))
             elif isinstance(current, list):
                 setattr(config, key, [item.strip() for item in str(value).split(",") if item.strip()])
             else:

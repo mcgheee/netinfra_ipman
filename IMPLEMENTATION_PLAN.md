@@ -1,7 +1,7 @@
 # NetInfra IPAM v1 implementation plan
 
-This plan implements [the approved design](DESIGN.md). Phase 1 is implemented;
-phases 2–6 remain pending. Design policies and initial operational defaults are
+This plan implements [the approved design](DESIGN.md). Phases 1–2 are implemented;
+phases 3–6 remain pending. Design policies and initial operational defaults are
 approved; environment-specific values are supplied at deployment time.
 
 ## 1. Application and persistence foundation
@@ -28,7 +28,7 @@ removed. One tracked runner streams bounded probes and awaits cleanup on shutdow
 Schedule execution and the complete scan contract remain phase 5; web routes and
 inventory behavior not covered by this phase retain their documented starter gaps.
 
-Verified: 82 tests pass using temporary storage and simulated probes. A standalone
+Phase-1 verification: 82 tests passed using temporary storage and simulated probes. A standalone
 runner/reopen smoke retained observations and a disabled schedule and recovered a
 running job as interrupted. An isolated Uvicorn/browser smoke rendered the page
 without Redis or bootstrap-credential banners. No live network scan was used.
@@ -51,6 +51,25 @@ without Redis or bootstrap-credential banners. No live network scan was used.
 Acceptance: fixtures from the upstream example and focused cases cover optional
 MACs, shared IPs, precedence, conflicts, aliases, `no_dns`, absolute DNS names,
 custom fields, and out-of-subnet assignments.
+
+Delivered: grouped optional-MAC inventory; deterministic shared-IP authority and
+conflicts; agreed DNS precedence, absolute names, and tokens; complete expected
+A-answer sets; structural/semantic diagnostics; outliers and full read-only host
+details. Known-IP checks and full subnet scans use a single revision-bound
+snapshot and central runner, persisting raw evidence independently from expected
+configuration. Semantic fingerprints stale affected observations without
+invalidating unrelated edits. Scanner resolver overrides use most-specific subnet,
+global, then server precedence and never DHCP options. SQLite schema 2 migrates
+phase-1 verdicts to historical raw evidence. Basic bounded address/outlier
+pagination was brought forward to avoid unbounded rendering during this phase.
+
+Verified: 191 tests pass. An attributed upstream fixture covers optional MAC,
+shared addresses, custom/non-IP records, and outliers. An isolated running-app
+browser smoke exercised the visible evidence states, complete retained host
+properties, refresh/full checks, scope/authentication guards, selective staleness,
+`/0` page boundaries, and restart/schema-upgrade persistence. All probes were
+simulated; no live network was scanned. Security, reviewed writes, remaining
+scan/schedule controls, and full web acceptance remain phases 3–6.
 
 ## 3. Secure access before exposing mutations
 
@@ -163,7 +182,7 @@ The interface remains responsive during large streamed scans.
 ## Verification and rollout
 
 The test dependencies are now installed in the development virtual environment,
-and the phase-1 suite passes. The original inspection had no pytest baseline.
+and the phase-2 suite passes. The original inspection had no pytest baseline.
 Add focused tests with each subsystem and use mocked network probes by default.
 Use an isolated sample NetInfra file and controlled test networks for integration checks.
 

@@ -15,7 +15,7 @@ class RuntimeStore:
     after all consumers (including the scan runner) have stopped.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, sqlite_path: str | Path):
         self.sqlite_path = str(sqlite_path)
@@ -48,7 +48,9 @@ class RuntimeStore:
                         "started_at TEXT NOT NULL, payload TEXT NOT NULL, source_revision TEXT)"
                     )
                     connection.execute("CREATE TABLE schedules (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-                    connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+                if version < 2:
+                    self._migrate_observations(connection)
+                connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 interrupted = connection.execute(
                     "SELECT id, payload FROM jobs WHERE status IN ('queued', 'running')"
                 ).fetchall()
@@ -63,6 +65,39 @@ class RuntimeStore:
             connection.close()
             raise
         self._connection = connection
+
+    @staticmethod
+    def _migrate_observations(connection: sqlite3.Connection) -> None:
+        """Replace phase-1 cached verdicts with latest raw evidence per address."""
+        rows = connection.execute(
+            "SELECT key, payload FROM observations WHERE key LIKE 'status:%' OR key LIKE 'observation:%'"
+        ).fetchall()
+        latest: dict[str, dict[str, Any]] = {}
+        for key, encoded in rows:
+            payload = json.loads(encoded)
+            ip = payload.get("ip") or key.split(":")[1]
+            raw = {
+                "ip": ip,
+                "checked_at": payload.get("checked_at"),
+                "ping_ok": payload.get("ping_ok", payload.get("responding")),
+                "ping_error": payload.get("ping_error", payload.get("error")),
+                "latency_ms": payload.get("latency_ms"),
+                "mac_found": payload.get("mac_found"),
+                "mac_error": payload.get("mac_error"),
+                "dns": payload.get("dns", {}),
+                "source_revision": payload.get("source_revision"),
+            }
+            for metadata in ("expectation_fingerprint", "job_id"):
+                if metadata in payload:
+                    raw[metadata] = payload[metadata]
+            if ip not in latest or (raw["checked_at"] or "") > (latest[ip]["checked_at"] or ""):
+                latest[ip] = raw
+            connection.execute("DELETE FROM observations WHERE key = ?", (key,))
+        for ip, raw in latest.items():
+            connection.execute(
+                "INSERT INTO observations (key, payload, source_revision) VALUES (?, ?, ?)",
+                (f"observation:{ip}", json.dumps(raw), raw["source_revision"]),
+            )
 
     def close(self) -> None:
         if self._connection is not None:

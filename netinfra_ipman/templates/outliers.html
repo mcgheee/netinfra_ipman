@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Validation / outliers</h2>
+{% for error in errors %}<div class="banner error">{{ error }}</div>{% endfor %}
+<p>Documented IPv4 assignments outside declared subnets remain visible but cannot be scanned. Fix the intended configuration; live network evidence does not validate an assignment.</p>
+{% if inventory %}
+<h3>Configuration diagnostics</h3>
+<ul>{% for issue in inventory.diagnostics %}<li><code>{{ issue.path }}</code>: {{ issue.message }}</li>{% else %}<li>No configuration diagnostics.</li>{% endfor %}</ul>
+<h3>Out-of-subnet assignments</h3>
+{% include "inventory_table.html" %}
+<nav class="pagination" aria-label="Outlier pages">
+  {% if page > 1 %}<a href="/outliers?page={{ page - 1 }}">Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="/outliers?page={{ page + 1 }}">Next</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

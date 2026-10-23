@@ -4,12 +4,12 @@ import asyncio
 import sqlite3
 import uuid
 from dataclasses import asdict, dataclass, field
-from ipaddress import ip_network
-from typing import Any
+from ipaddress import IPv4Address, collapse_addresses, ip_network
+from typing import Any, Iterator
 
-from .checks import check_ping
+from .checks import check_address, check_ping
 from .config import AppConfig
-from .models import Severity, utc_now_iso
+from .models import Inventory, utc_now_iso
 from .persistence import RuntimeStore
 
 
@@ -26,6 +26,7 @@ class ScanJob:
     incomplete: bool = False
     source_revision: str | None = None
     error: str | None = None
+    mode: str = "full"
 
 
 class ScanManager:
@@ -39,7 +40,7 @@ class ScanManager:
         self._closed = False
         self.store.prune_jobs(self.config.completed_job_retention)
 
-    def start(self, cidr: str, known_ips: set[str], source_revision: str | None = None) -> ScanJob:
+    def start(self, cidr: str, inventory: Inventory, *, known_only: bool = False) -> ScanJob:
         if self._closed:
             raise ValueError("Scan manager is closed")
         if self._runner is not None:
@@ -50,11 +51,35 @@ class ScanManager:
         network = ip_network(cidr, strict=False)
         if network.version != 4:
             raise ValueError("Only IPv4 scans are supported")
-        total = network.num_addresses if network.prefixlen >= 31 else network.num_addresses - 2
-        job = ScanJob(id=str(uuid.uuid4()), cidr=str(network), total=total, source_revision=source_revision)
+        declared = collapse_addresses(ip_network(subnet.cidr) for subnet in inventory.subnets)
+        if not any(network.subnet_of(parent) for parent in declared):
+            raise ValueError("Targets must be within declared IPv4 subnets")
+        if known_only:
+            selected = tuple(ip for ip in inventory.groups if IPv4Address(ip) in network)
+            total = len(selected)
+            targets = iter(selected)
+        else:
+            total = network.num_addresses if network.prefixlen >= 31 else network.num_addresses - 2
+            targets = (str(ip) for ip in network.hosts())
+        job = ScanJob(
+            id=str(uuid.uuid4()), cidr=str(network), total=total, source_revision=inventory.revision,
+            mode="known-only" if known_only else "full",
+        )
         self.store.save_job(asdict(job))
         self._active_job = job
-        self._runner = loop.create_task(self._run(job, set(known_ips)), name=f"scan-{job.id}")
+        self._runner = loop.create_task(self._run(job, inventory, self.config, targets), name=f"scan-{job.id}")
+        return job
+
+    async def refresh(self, cidr: str, inventory: Inventory) -> ScanJob:
+        job = self.start(cidr, inventory, known_only=True)
+        runner = self._runner
+        assert runner is not None
+        try:
+            await asyncio.shield(runner)
+        except asyncio.CancelledError:
+            self.cancel(job.id)
+            await asyncio.gather(runner, return_exceptions=True)
+            raise
         return job
 
     def cancel(self, job_id: str) -> None:
@@ -67,40 +92,38 @@ class ScanManager:
         if job.status == "running":
             self._runner.cancel()
 
-    async def _ping(self, ip: str) -> tuple[bool, float | None, str | None]:
-        # Cancelling to_thread alone leaves the underlying probe running. Shield
-        # it and await its bounded timeout before reporting runner cleanup done.
-        probe = asyncio.create_task(asyncio.to_thread(check_ping, ip, self.config.ping_timeout))
+    async def _observe(self, ip: str, inventory: Inventory, config: AppConfig) -> dict[str, Any]:
+        def observe() -> dict[str, Any]:
+            group = inventory.groups.get(ip)
+            if group is not None:
+                return check_address(group, inventory, config)
+            ok, latency, error = check_ping(ip, config.ping_timeout)
+            return {
+                "ip": ip, "ping_ok": ok, "ping_error": error, "latency_ms": latency,
+                "checked_at": utc_now_iso(), "source_revision": inventory.revision,
+            }
+
+        # Cancelling the asyncio wait does not stop the synchronous probes.
+        probe = asyncio.create_task(asyncio.to_thread(observe))
         try:
             return await asyncio.shield(probe)
         except asyncio.CancelledError:
-            await probe
+            await asyncio.gather(probe, return_exceptions=True)
             raise
 
-    async def _run(self, job: ScanJob, known_ips: set[str]) -> None:
+    async def _run(self, job: ScanJob, inventory: Inventory, config: AppConfig, targets: Iterator[str]) -> None:
         workers: list[asyncio.Task[None]] = []
-        targets = iter(ip_network(job.cidr).hosts())
 
         async def consume() -> None:
             while not job.cancel_requested:
                 try:
-                    ip = str(next(targets))
+                    ip = next(targets)
                 except StopIteration:
                     return
-                ok, latency, error = await self._ping(ip)
-                if ok or ip in known_ips:
-                    self.store.set(f"observation:{ip}", {
-                        "ip": ip,
-                        "responding": ok,
-                        "latency_ms": latency,
-                        "error": error,
-                        "managed": ip in known_ips,
-                        "discovered": ok and ip not in known_ips,
-                        "severity": Severity.green.value if ok else Severity.neutral.value,
-                        "checked_at": utc_now_iso(),
-                        "job_id": job.id,
-                        "source_revision": job.source_revision,
-                    })
+                observation = await self._observe(ip, inventory, config)
+                if observation.get("ping_ok") or ip in inventory.groups:
+                    observation["job_id"] = job.id
+                    self.store.set(f"observation:{ip}", observation)
                 job.progress += 1
                 self.store.save_job(asdict(job))
 
@@ -108,7 +131,7 @@ class ScanManager:
             if not job.cancel_requested:
                 job.status = "running"
                 self.store.save_job(asdict(job))
-                workers = [asyncio.create_task(consume()) for _ in range(min(self.config.scan_concurrency, job.total))]
+                workers = [asyncio.create_task(consume()) for _ in range(min(config.scan_concurrency, job.total))]
                 await asyncio.gather(*workers)
             job.status = "cancelled" if job.cancel_requested else "complete"
             job.incomplete = job.cancel_requested

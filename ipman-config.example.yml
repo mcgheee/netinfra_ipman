@@ -11,6 +11,9 @@ ping_timeout: 1.0
 dns_timeout: 2.0
 dns_lifetime: 2.0
 dns_servers: []
+# Optional scanner resolver overrides by canonical IPv4 CIDR, most specific first.
+# These are independent of NetInfra DHCP DNS options.
+subnet_dns_servers: {}
 large_subnet_prefix: 24
 max_subnet_prefix: 16
 git_enabled: false

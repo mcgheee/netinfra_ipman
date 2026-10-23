@@ -1,9 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-{% if bootstrap_password %}
-<div class="banner warning">Bootstrap admin password: <code>{{ bootstrap_password }}</code>. Change it after first login.</div>
-{% endif %}
-{% if not cache_available %}<div class="banner warning">Redis unavailable; using in-memory cache for this process.</div>{% endif %}
 {% for error in errors %}<div class="banner error">{{ error }}</div>{% endfor %}
 <section class="tabs">
   {% for subnet in subnets %}

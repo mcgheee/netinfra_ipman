@@ -7,3 +7,6 @@ ipman-admin.yml
 ipman-audit.log
 NetInfra.yml.*.bak
 *.egg-info/
+ipman.sqlite3
+ipman.sqlite3-wal
+ipman.sqlite3-shm

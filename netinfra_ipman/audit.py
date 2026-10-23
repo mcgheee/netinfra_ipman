@@ -25,8 +25,7 @@ class AuditEvent:
 class AuditLogger:
     def __init__(self, config: AppConfig):
         self.config = config
-        self.logger = logging.getLogger("netinfra_ipman.audit")
-        self.logger.handlers.clear()
+        self.logger = logging.Logger("netinfra_ipman.audit")
         self.logger.setLevel(logging.INFO)
         formatter = logging.Formatter("%(message)s")
         if config.audit_to_file:
@@ -41,6 +40,11 @@ class AuditLogger:
             self.logger.addHandler(handler)
         if not self.logger.handlers:
             self.logger.addHandler(logging.NullHandler())
+
+    def close(self) -> None:
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+            handler.close()
 
     def record(self, user: str, source_ip: str, action: str, summary: str, before: Any = None, after: Any = None) -> None:
         event = AuditEvent(

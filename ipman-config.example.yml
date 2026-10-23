@@ -4,7 +4,8 @@ admin_file: ./ipman-admin.yml
 audit_log_file: ./ipman-audit.log
 audit_to_file: true
 audit_to_syslog: false
-redis_url: redis://localhost:6379/0
+sqlite_path: ./ipman.sqlite3
+completed_job_retention: 100
 scan_concurrency: 128
 ping_timeout: 1.0
 dns_timeout: 2.0

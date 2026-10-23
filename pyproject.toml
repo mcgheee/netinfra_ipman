@@ -12,7 +12,6 @@ dependencies = [
   "dnspython>=2.6",
   "ping3>=4.0",
   "getmac>=0.9",
-  "redis>=5.0",
   "passlib>=1.7",
   "itsdangerous>=2.2",
   "authlib>=1.3",

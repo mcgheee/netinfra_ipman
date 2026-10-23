@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import getpass
-import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -57,14 +56,6 @@ def create_admin(config: AppConfig, username: str, password: str, must_change: b
             "locked_until": None,
         },
     )
-
-
-def ensure_bootstrap_admin(config: AppConfig) -> str | None:
-    if admin_exists(config):
-        return None
-    password = secrets.token_urlsafe(18)
-    create_admin(config, "admin", password, must_change=True)
-    return password
 
 
 def authenticate(config: AppConfig, username: str, password: str) -> UserState | None:

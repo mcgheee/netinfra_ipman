@@ -252,29 +252,30 @@ network observations.
 | Freshness | Twice applicable scheduled interval, otherwise 24 hours; overridable. |
 | Git | Optional local commits; no automatic push. |
 
-## Starter gaps: implementation work
+## Implementation gaps
 
-These are differences between the inspected starter and the approved design,
-not undecided architecture choices.
+Phase 1 of the implementation plan is delivered. The table distinguishes the
+remaining starter gaps from completed foundation work; these are implementation
+differences, not undecided architecture choices.
 
-| Area | Starter behavior | Required change |
+| Area | Current behavior | Required change |
 | --- | --- | --- |
 | Inventory | Requires MAC; flags repeated IPs; reduces rows to one record. | Optional MAC, grouping, authority rules, conflict diagnostics, outliers. |
 | DNS identity | Uses `Source`, `HostName`, then `Name`; strips trailing dots early. | Agreed `AltHostName` precedence, absolute-name and token handling. |
 | Editing | Can append a host only. | Full host editing/deletion, advanced YAML, bulk import. |
 | Validation | Skips some invalid data and has minimal field checks. | Visible diagnostics and safe validation without discarding data. |
 | Saving | Direct file writes and unbound previews; backups in the file directory. | Revision-bound previews, serialized atomic saves, external backups, Git outcome handling. |
-| Scanning | Manual in-process jobs; one task per target; `/16` cutoff. | Streamed targets, persistent jobs, modes, rate limits, range/IP scans, recovery. |
-| Scheduling | Absent. | Durable interval/calendar schedules and overlap handling. |
+| Scanning | Single durable job runner with bounded streamed probes and restart recovery; web `/16` cutoff remains. | Full scan scopes/modes, rate limits, confirmation policy, and scheduling. |
+| Scheduling | Durable disabled-by-default definitions; no dispatch/UI. | Interval/calendar schedules and overlap handling. |
 | Results | Discovery results are not merged into the address table. | Reconciled latest observations and visible undocumented responders. |
 | Status | Ping/DNS failures are combined as errors; no freshness policy. | Distinguish mismatch, inconclusive evidence, stale results, and scan failures. |
-| Storage | Redis with process-memory fallback; jobs live in memory. | SQLite and bounded, durable runtime state. |
+| Storage | SQLite retains latest observations, schedules, and bounded job summaries. | Complete reconciliation/coverage and scheduling integration in later phases. |
 | UI scale | Renders every usable IP in a subnet. | Pagination, filtering, progressive scan updates. |
-| Authentication | Trusts an unsigned username cookie; bootstrap password can appear publicly. | Verified sessions, CLI provisioning, authorization, CSRF protection. |
+| Authentication | CLI-only provisioning; still trusts an unsigned username cookie. | Verified sessions, CLI recovery, authorization, CSRF protection. |
 | SSO | Keycloak/Duo configuration fields without working integration. | Working OIDC; standalone Duo integration is not part of this design. |
 | Access/settings | Anonymous viewing is fixed; refresh can trigger probes anonymously; settings expose configuration values. | Configurable viewing, authenticated probes, protected and redacted settings. |
-| Lifecycle | Importing the application creates files and initializes services. | Explicit startup and application lifecycle. |
-| Tests | Five small parser/serialization tests. | Integration, authorization, concurrency, failure, and scale coverage. |
+| Lifecycle | Explicit factory/lifespan initialization and awaited scan/storage/audit cleanup. | Foundation delivered; one worker required. |
+| Tests | 82 passing tests, including foundation lifecycle, persistence, cancellation, and recovery. | Remaining inventory, authorization, write safety, scheduling, and UI acceptance coverage. |
 
 ## Deployment configuration still required
 
@@ -292,6 +293,6 @@ known-IP/discovery schedules; and actionable discrepancy displays. It must
 preserve unrelated NetInfra content, enforce all roles in both anonymous-view
 modes, and remain responsive with large target ranges using bounded resources.
 
-Tests use simulated probes and controlled networks. At initial inspection,
-`python -m pytest` could not run because pytest was not installed; no passing
-test baseline has been established yet.
+Tests use simulated probes and controlled networks. Initial inspection lacked
+pytest; phase-1 verification now passes 82 tests. This does not establish full v1
+acceptance or make the remaining starter authentication/write paths safe to deploy.

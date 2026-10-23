@@ -1,9 +1,8 @@
 # NetInfra IPAM v1 implementation plan
 
-This plan implements [the approved design](DESIGN.md). Application changes have
-not been implemented by this documentation update. Design policies and initial
-operational defaults are approved; environment-specific values are supplied at
-deployment time.
+This plan implements [the approved design](DESIGN.md). Phase 1 is implemented;
+phases 2–6 remain pending. Design policies and initial operational defaults are
+approved; environment-specific values are supplied at deployment time.
 
 ## 1. Application and persistence foundation
 
@@ -21,6 +20,18 @@ deployment time.
 
 Acceptance: startup has explicit, testable initialization; restart retains
 schedules and latest observations; interrupted jobs are clearly identified.
+
+Delivered: explicit `create_app()`/FastAPI lifespan, validated settings, SQLite
+schema version 1, durable observations/schedule definitions/job summaries, and
+interrupted-job recovery. Redis and web-startup administrator provisioning are
+removed. One tracked runner streams bounded probes and awaits cleanup on shutdown.
+Schedule execution and the complete scan contract remain phase 5; web routes and
+inventory behavior not covered by this phase retain their documented starter gaps.
+
+Verified: 82 tests pass using temporary storage and simulated probes. A standalone
+runner/reopen smoke retained observations and a disabled schedule and recovered a
+running job as interrupted. An isolated Uvicorn/browser smoke rendered the page
+without Redis or bootstrap-credential banners. No live network scan was used.
 
 ## 2. Inventory compatibility and reconciliation
 
@@ -151,10 +162,10 @@ The interface remains responsive during large streamed scans.
 
 ## Verification and rollout
 
-Install the project's test dependencies before establishing the baseline; pytest
-was unavailable during initial inspection. Add focused tests with each subsystem
-and use mocked network probes by default. Use an isolated sample NetInfra file
-and controlled test networks for integration checks.
+The test dependencies are now installed in the development virtual environment,
+and the phase-1 suite passes. The original inspection had no pytest baseline.
+Add focused tests with each subsystem and use mocked network probes by default.
+Use an isolated sample NetInfra file and controlled test networks for integration checks.
 
 Deliver in the order above. Do not deploy the starter's existing authentication
 or direct-write paths as the finished application. Validate against a copy of a

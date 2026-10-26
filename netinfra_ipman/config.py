@@ -53,6 +53,8 @@ class AppConfig:
     audit_to_file: bool = True
     audit_to_syslog: bool = False
     sqlite_path: str = "./ipman.sqlite3"
+    backup_dir: str = "./ipman-backups"
+    backup_retention: int = 20
     completed_job_retention: int = 100
     scan_concurrency: int = 128
     ping_timeout: float = 1.0
@@ -65,8 +67,6 @@ class AppConfig:
     git_enabled: bool = False
     git_repo_path: str = "."
     git_branch: str = "main"
-    git_push: bool = False
-    git_remote: str = "origin"
     session_timeout_minutes: int = 60
     lockout_attempts: int = 5
     lockout_minutes: int = 15
@@ -113,20 +113,21 @@ class AppConfig:
 
         path_fields = (
             "netinfra_path", "config_path", "admin_file", "audit_log_file",
-            "sqlite_path", "git_repo_path",
+            "sqlite_path", "git_repo_path", "backup_dir",
         )
         for name in path_fields:
             value = getattr(self, name)
             if not value.strip() or "\0" in value:
                 raise ValueError(f"{name} must be a nonempty path without NUL characters")
+        if Path(self.git_repo_path).exists() and not Path(self.git_repo_path).is_dir():
+            raise ValueError("git_repo_path must be a directory path")
         if self.sqlite_path == ":memory:":
             raise ValueError("sqlite_path must use persistent local storage, not :memory:")
-        for name in ("git_branch", "git_remote"):
-            if not getattr(self, name).strip():
-                raise ValueError(f"{name} must not be empty")
+        if not self.git_branch.strip() or "\0" in self.git_branch:
+            raise ValueError("git_branch must be nonempty and contain no NUL characters")
         for name in (
             "scan_concurrency", "session_timeout_minutes", "lockout_attempts",
-            "lockout_minutes",
+            "lockout_minutes", "backup_retention",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be greater than zero")
@@ -192,12 +193,30 @@ class AppConfig:
         protected = ("netinfra_path", "config_path", "admin_file", "audit_log_file", "sqlite_path")
         for index, name in enumerate(protected):
             path = Path(getattr(self, name)).resolve()
+            if path.exists() and not path.is_file():
+                raise ValueError(f"{name} must be a file path")
             for other in protected[index + 1:]:
                 other_path = Path(getattr(self, other)).resolve()
                 if path == other_path or (
                     path.exists() and other_path.exists() and path.samefile(other_path)
                 ):
                     raise ValueError(f"{name} and {other} must be separate files")
+                if path in other_path.parents or other_path in path.parents:
+                    raise ValueError(f"{name} and {other} must not contain one another")
+        backup = Path(self.backup_dir).resolve()
+        if backup.exists() and not backup.is_dir():
+            raise ValueError("backup_dir must be a directory path")
+        for name in protected:
+            path = Path(getattr(self, name)).resolve()
+            if backup == path or backup in path.parents or path in backup.parents:
+                raise ValueError(f"backup_dir and {name} must be separate file/directory paths")
+        source = Path(self.netinfra_path).resolve()
+        if source.exists():
+            for directory in source.parents:
+                if (directory / ".git").exists():
+                    if backup.is_relative_to(directory):
+                        raise ValueError("backup_dir must be outside the source Git checkout")
+                    break
 
 
 def _coerce_config(data: Any, config_path: str) -> AppConfig:
@@ -205,6 +224,12 @@ def _coerce_config(data: Any, config_path: str) -> AppConfig:
         raise ValueError("Configuration must be a YAML mapping of setting names to values")
     if "redis_url" in data:
         raise ValueError("redis_url is no longer supported; replace it with sqlite_path")
+    retired_git = sorted(set(data) & {"git_push", "git_remote"})
+    if retired_git:
+        raise ValueError(
+            "Retired Git settings: " + ", ".join(retired_git)
+            + "; remove these settings; Git supports local commits only, without automatic push"
+        )
     retired = [
         name for name in data
         if isinstance(name, str) and (

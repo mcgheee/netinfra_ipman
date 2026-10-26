@@ -254,20 +254,20 @@ network observations.
 
 ## Implementation gaps
 
-Phases 1–3 of the implementation plan are delivered. The table distinguishes
-remaining gaps from completed foundation, reconciliation, and access work; these
-are implementation differences, not undecided architecture choices.
+Phases 1–4 of the implementation plan are delivered. The table distinguishes
+remaining gaps from completed foundation, reconciliation, access, and reviewed
+host-write behavior; these are implementation differences, not undecided choices.
 
 | Area | Current behavior | Required change |
 | --- | --- | --- |
 | Inventory | Optional MACs, grouped authority/conflicts, retained definitions, and visible outliers. | Foundation for full reviewed host editing is delivered. |
 | DNS identity | `Source`, `AltHostName`, then `Name`; absolute/relative handling and NetInfra tokens. | Compatibility behavior delivered; original values remain intact. |
-| Editing | Can append a host only. | Full host editing/deletion, advanced YAML, bulk import. |
-| Validation | Visible structural/semantic diagnostics without discarding raw data. | Enforce full host-edit validation on preview/apply in phase 4. |
-| Saving | Direct file writes and unbound previews; backups in the file directory. | Revision-bound previews, serialized atomic saves, external backups, Git outcome handling. |
+| Editing | `/hosts` provides bounded host listing/details and editor-only create/update/delete with common fields and full advanced YAML. Imports accept pasted/uploaded lists or `Hosts:` wrappers; name collisions reject the whole batch. | Host edits, deletion, and bulk creation delivered. |
+| Validation | The full proposal is checked for structure, known field values, duplicate names, MAC conflicts, and eligible out-of-subnet targets. Valid shared IPs and live discrepancies do not block saves. | Full preview/apply validation delivered. |
+| Saving | Actor-bound tokens bind exact proposed bytes and source revision; full-file diffs, serialized rechecks, external private backups, atomic replacement, separate Git result, guarded retry, no push. External writers remain outside app-lock coordination. | Reviewed atomic writes and local-only Git delivered; configure backup storage and coordinate external writers. |
 | Scanning | Central durable runner for full/known checks with snapshot revisions, bounded probes, and restart recovery; web full-scan `/16` cutoff remains. | Remaining scope/mode controls, rate limits, confirmation policy, and scheduling. |
 | Scheduling | Durable disabled-by-default definitions; no dispatch/UI. | Interval/calendar schedules and overlap handling. |
-| Results | Raw observations reconcile per address; undocumented responders are visible with timestamps. | Compact discovery coverage, DHCP context, and reviewed host creation. |
+| Results | Raw observations reconcile per address; undocumented responders are visible with timestamps. | Compact discovery coverage, DHCP context, and reviewed discovery-to-host workflow. |
 | Status | Exact DNS sets and MAC comparison; unavailable evidence is incomplete; relevant edits mark evidence stale. | Age/schedule-based freshness and administrator override. |
 | Storage | SQLite schema 3 retains observations, schedules, bounded jobs, hashed sessions, and expiring OIDC transactions. | Coverage and scheduling integration in later phases. |
 | UI scale | Address and outlier views render bounded pages with direct IPv4 arithmetic. | Search/filtering and progressive scan updates. |
@@ -275,7 +275,7 @@ are implementation differences, not undecided architecture choices.
 | SSO | OIDC discovery, code/PKCE flow, signed RS256 ID-token validation, and explicit claim-to-role mapping. | Supply real provider/redirect/mapping configuration at deployment. |
 | Access/settings/audit | Anonymous view defaults off; optional viewing is read-only; admin-only redacted settings/audit, explicit proxy trust, private settings writes, and bounded audit rotation. | Schedule administration uses these policies when delivered in phase 5. |
 | Lifecycle | Explicit factory/lifespan initialization and awaited scan/storage/audit cleanup. | Foundation delivered; one worker required. |
-| Tests | 396 passing tests, including identity/session/CSRF/role/OIDC failures, recovery, redaction, proxy trust, and earlier inventory/runtime behavior. | Host write safety, scheduling, and complete UI acceptance coverage. |
+| Tests | 501 tests pass, covering phase-4 host transactions, Git, routes, authorization and earlier identity/inventory/runtime behavior. | Remaining scan/schedule and complete UI acceptance coverage. |
 
 ## Deployment configuration still required
 
@@ -293,6 +293,8 @@ known-IP/discovery schedules; and actionable discrepancy displays. It must
 preserve unrelated NetInfra content, enforce all roles in both anonymous-view
 modes, and remain responsive with large target ranges using bounded resources.
 
-Tests use simulated probes and controlled networks. Initial inspection lacked
-pytest; phase-3 verification now passes 396 tests. This does not establish full v1
-acceptance or make the remaining starter direct-write paths safe to deploy.
+Tests use temporary files and simulated probes. The phase-4 suite passes 501 tests,
+including reviewed host writes, import collisions, validation, atomic backups,
+local-only Git, and the earlier identity/inventory/runtime behavior. Phases 5–6
+remain required for complete v1 acceptance; phase 4 does not claim production
+readiness.

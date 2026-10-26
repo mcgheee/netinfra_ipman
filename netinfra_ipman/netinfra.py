@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
+from io import StringIO
 from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
 from pathlib import Path
 from typing import Any
@@ -71,10 +72,17 @@ def load_inventory(path: str | Path) -> Inventory:
     return build_inventory(_parse(content), revision=hashlib.sha256(content).hexdigest())
 
 
+def serialize_netinfra(data: Any) -> bytes:
+    """Serialize round-trip YAML, including an explicitly preserved preamble."""
+    handle = StringIO()
+    handle.write(getattr(data, "_ipman_preamble", ""))
+    _yaml().dump(data, handle)
+    return handle.getvalue().encode("utf-8")
+
+
 def save_netinfra(path: str | Path, data: dict[str, Any]) -> None:
-    with Path(path).open("w", encoding="utf-8") as handle:
-        handle.write(getattr(data, "_ipman_preamble", ""))
-        _yaml().dump(data, handle)
+    """Serializer convenience; application mutations use HostWriteService."""
+    Path(path).write_bytes(serialize_netinfra(data))
 
 
 def valid_ipv4(value: Any) -> str | None:
@@ -185,6 +193,16 @@ def build_inventory(data: Any, revision: str = "") -> Inventory:
             for key in ("Source", "AltHostName", "ZoneName", "RRType", "MAC", "Target"):
                 if key in record and not isinstance(record[key], str):
                     report(f"{path}.{key}", "Must be a string")
+            for key in ("TTL", "Priority", "Weight", "Port"):
+                if key in record:
+                    value = record[key]
+                    maximum = 65535 if key in {"Priority", "Weight", "Port"} else 2147483647
+                    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
+                        report(f"{path}.{key}", f"Must be an integer between 0 and {maximum}")
+            if "Block_DHCP" in record and type(record["Block_DHCP"]) is not bool:
+                report(f"{path}.Block_DHCP", "Must be a boolean")
+            if "Comment" in record and not isinstance(record["Comment"], str):
+                report(f"{path}.Comment", "Must be a string")
             rrtype = record.get("RRType", "A")
             if not isinstance(rrtype, str) or not rrtype.strip():
                 if isinstance(rrtype, str):
@@ -196,6 +214,13 @@ def build_inventory(data: Any, revision: str = "") -> Inventory:
             mac = normalize_mac(raw_mac)
             if has_mac and mac is None:
                 report(f"{path}.MAC", "Invalid MAC address")
+            if rrtype == "aaaa":
+                try:
+                    address = ip_address(record.get("Target", ""))
+                except (ValueError, TypeError):
+                    address = None
+                if address is None or address.version != 6:
+                    report(f"{path}.Target", "AAAA target must be a valid IPv6 address")
             if rrtype not in {"a", "no_dns"}:
                 continue
             target = valid_ipv4(record.get("Target"))
@@ -240,17 +265,3 @@ def build_inventory(data: Any, revision: str = "") -> Inventory:
     return inventory
 
 
-def append_discovered_host(data: dict[str, Any], name: str, zone_name: str, target: str, mac: str | None, comment: str | None) -> None:
-    if not valid_ipv4(target):
-        raise ValueError("Target must be a valid IPv4 address")
-    record: dict[str, Any] = {"ZoneName": zone_name, "Target": target}
-    if mac:
-        record["MAC"] = mac
-        record["Comment"] = comment or ""
-    else:
-        record["Comment"] = "Placeholder"
-    host = {"Name": name.strip().rstrip("."), "Records": [record]}
-    hosts = data.setdefault("Hosts", [])
-    if not isinstance(hosts, list):
-        raise ValueError("Hosts must be a list")
-    hosts.append(host)

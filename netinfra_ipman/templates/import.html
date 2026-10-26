@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Import hosts</h2>
+<p>Submit a YAML host list or a mapping containing <code>Hosts:</code>. The batch is created together; existing hosts are not overwritten.</p>
+<form method="post" action="/hosts/preview" enctype="multipart/form-data" class="stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="operation" value="import">
+  <input type="hidden" name="revision" value="{{ revision }}">
+  <label>Paste or edit YAML <textarea name="host_yaml" rows="18" spellcheck="false">{{ starter }}</textarea></label>
+  <label>Or upload YAML <input type="file" name="upload" accept=".yml,.yaml,text/yaml,application/yaml"></label>
+  <button>Review complete file diff</button>
+</form>
+{% endblock %}

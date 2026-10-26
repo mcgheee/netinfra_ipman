@@ -65,8 +65,8 @@ MUTATIONS = [
     ('/refresh', {'subnet': '192.0.2.1/32'}),
     ('/scan', {'subnet': '192.0.2.1/32'}),
     ('/scan/unknown/cancel', {}),
-    ('/add/preview', {'name': 'new', 'zone_name': 'example.test', 'target': '192.0.2.1'}),
-    ('/add/commit', {'name': 'new', 'zone_name': 'example.test', 'target': '192.0.2.1'}),
+    ('/hosts/preview', {'operation': 'create'}),
+    ('/hosts/apply', {'token': 'unreviewed'}),
     ('/options', {'scan_concurrency': '2'}),
 ]
 

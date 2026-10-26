@@ -2,10 +2,10 @@
 
 ## Delivery state
 
-Phases 1–3 are implemented. Phase 4 is next. This is **not production-ready v1**:
-verified access controls now protect the existing routes, but host write-back
-still has unsafe starter semantics. Use a disposable NetInfra copy until the
-reviewed-write phase is complete.
+Phases 1–4 are implemented. Phase 5 is next. This is **not production-ready v1**:
+host writes now use full reviewed validation, revision-bound previews, external
+backups, and atomic replacement; complete scan controls and scheduling remain
+unfinished. Validate deployment against a disposable NetInfra copy.
 
 Authoritative behavior and acceptance criteria:
 - [DESIGN.md](DESIGN.md)
@@ -108,60 +108,61 @@ SQLite files, and verifier services were removed; no simulator ships in the app.
   revokes the app session, not the provider session; provider membership changes
   take effect on the next login, with no retained refresh token.
 
-## Next: phase 4
+## What phase 4 delivered
 
-Implement the whole section-4 acceptance contract, not only a safer append route:
+| Area | Implementation |
+| --- | --- |
+| Host workflows | `main.py` and templates provide paginated read details, editor-gated create/update/delete, common-field forms, complete advanced YAML, and pasted/uploaded list-or-`Hosts:` imports. Name collisions reject the entire batch. |
+| Shared transactions | `hostwrites.py` binds opaque actor-specific tokens to immutable proposed bytes and source revision. Preview/apply validates the complete document; altered/direct apply and stale previews are rejected. Application writes serialize under one lock. |
+| Validation and preservation | `netinfra.py` keeps round-trip comments, preamble, quotes, ordering, custom/nested fields, and unrelated sections. Structure, known field values, duplicate names, MAC conflicts, and out-of-subnet eligible assignments block saves; valid shared IPs and live discrepancies do not. |
+| File durability | Backups default to `./ipman-backups` outside a discovered Git checkout and retain 20 files. The service rechecks the source immediately before same-directory atomic replacement, preserves file mode, fsyncs, and reports independent file/Git outcomes. |
+| Git cutover | `gitops.py` validates checkout root, configured branch and cleanliness without switching branches, commits only the intended source, never pushes, and supports guarded commit retry. Retired `git_push`/`git_remote` configuration is rejected with migration guidance. |
+| Coverage | `tests/test_hostwrites.py`, `tests/test_gitops.py`, `tests/test_host_routes.py`, configuration, NetInfra and access tests cover the phase contract. A rendered Uvicorn/browser smoke verified the host list; all host mutations used temporary-file integration tests. |
 
-1. Host create/read/update/delete, common-field forms, and complete advanced YAML
-   editing. Subnets and non-host sections remain read-only.
-2. Bulk creation from pasted/uploaded YAML or a starter, accepting a host list or
-   `Hosts:` wrapper. Reject the entire batch on existing or within-batch Name
-   collisions; never merge/overwrite implicitly.
-3. One shared preview/apply service. Bind the source content revision and exact
-   proposed bytes/change to the reviewed preview. Present a full-file diff and
-   validation findings; reject stale or altered/direct-apply attempts.
-4. Validate the complete proposal against the inventory: structure, known field
-   values, shared-IP MAC conflicts, out-of-subnet eligible targets, and cross-host
-   consistency. No warning bypass. Consistent shared IPs and live network
-   discrepancies alone must not block saves. Current viewing diagnostics are not
-   yet a complete save-validation contract.
-5. Serialize app writes, recheck the revision immediately before saving, create
-   backups outside the Git checkout, then atomically replace the reviewed file.
-   Preserve round-trip comments, explicit document preambles, quotes, ordering,
-   custom/nested fields, and non-IP records. Document the limit of coordination
-   with external writers that ignore app locks.
-6. Validate configured Git branch/checkout without silently switching branches.
-   Separate file-save and optional local-commit outcomes, with a commit retry path.
-   No automatic push. Remove obsolete write paths and configuration on cutover.
+### Write coordination limit
 
-### Existing hazards to replace
+The process-local lock serializes app writes only. External programs that ignore
+the lock can still write concurrently; source revision checks detect changes up
+to the atomic replace but cannot lock unrelated editors. Coordinate external
+writers operationally. Backups are stored outside the checkout, default to
+20 retained files, and can be configured with `backup_dir` and `backup_retention`.
 
-- `main.add_preview` builds a diff but binds nothing to a subsequent request.
-- `main.add_commit` reloads the file and accepts submitted fields again; it has no
-  stale-preview check, serialized write, or full semantic save validation.
-- It backs up beside the source and calls `save_netinfra` directly; the serializer
-  itself is not a safe host-write transaction.
-- `gitops.ensure_clean_checkout` currently runs `git checkout` before checking
-  cleanliness. `gitops.commit_changes` still supports the legacy `git_push` flag.
-  Both are pending the phase-4 local-only Git cutover.
+### Verification performed
 
-Useful starting points: `netinfra.py` for round-trip loading/serialization and
-`build_inventory`/`load_inventory`; `main.py` for the append handlers; `gitops.py`
-for legacy Git behavior; the form templates; and `tests/test_netinfra.py` for
-preservation and upstream fixtures. Keep filesystem/probe/persistence operations
-independently testable rather than moving all write logic into handlers.
+```bash
+.venv/bin/python -m pytest -q
+```
 
-Keep regression coverage for stale/tampered previews, whole-batch rejection,
-concurrent app edits, external changes, backups, write/replace failures,
-preservation, semantic conflicts, and file-saved/Git-failed outcomes. Keep the
-phase-3 authorization/CSRF checks on every new endpoint. Run the changed paths
-against temporary files and perform a rendered review/apply smoke before delivery.
+Result: **501 passed**, with one Starlette/httpx TestClient deprecation warning.
+The host route tests covered create, update, delete, bulk import, whole-batch
+collision rejection, stale/direct/replayed apply rejection, authorization, CSRF,
+and external backups. A real Uvicorn/browser smoke rendered the paginated host
+list against isolated temporary configuration and data. No network probes ran.
+
+## Next: phase 5
+
+Implement all section-5 scan and schedule requirements:
+
+1. Explicit target scope (declared network, subnet, range, or IP) and mode (full,
+   known-only, discovery-only), with declared-subnet enforcement and deduplication.
+2. Stream all IPv4 CIDR sizes through bounded queues; remove the web `/16` cutoff,
+   apply configurable 128-concurrency/100-starts-per-second defaults, and require
+   manual confirmation above 4,096 targets.
+3. Persist sparse undocumented observations and compact discovery coverage;
+   implement progress, cancellation, partial/failure outcomes, and restart behavior.
+4. Add disabled-by-default interval and timezone-aware daily/weekly schedules,
+   separate known-IP/discovery schedules, administrator management, coalescing,
+   no downtime catch-up, and DST skip/repeat-once semantics.
+5. Keep scan scope resolution against current NetInfra at dispatch and enforce
+   editor/admin permissions plus CSRF on new endpoints.
+
+Retain simulated probes, bounded large-CIDR tests, controlled-clock rate and DST
+tests, restart tests, and rendered scope/progress/cancellation checks.
 
 ## Remaining later-phase work
 
-Phases 5–6 still include complete scan scope/mode controls, removal of the full-scan
-web `/16` cutoff and prefix-based confirmation policy, start-rate bounds,
-scheduling/DST/coalescing, compact discovery coverage, age-based freshness,
-search/filtering/progressive updates, DHCP context, and complete deployment/UI
-acceptance. Do not describe these as implemented because the foundational runner
-or identity interfaces exist.
+Phase 6 still includes search/filtering/progressive updates, age-based freshness,
+DHCP context and discovery-to-host review, plus complete end-to-end deployment/UI
+acceptance. Do not claim v1 production readiness until the full phase-6 acceptance
+contract is complete.
+

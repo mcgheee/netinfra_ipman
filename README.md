@@ -7,7 +7,7 @@ and comparing intended configuration with network observations. The
 
 ## Implementation status
 
-Phases 1–3 (foundation, reconciliation, and secure access) are implemented:
+Phases 1–4 (foundation, reconciliation, secure access, and reviewed host writes) are implemented:
 
 - `create_app()` constructs independent applications without creating configuration,
   credentials, logs, or database files at import time.
@@ -29,7 +29,7 @@ Phases 1–3 (foundation, reconciliation, and secure access) are implemented:
 - DNS owners use `Source`, then `AltHostName`, then host `Name`. Absolute owners
   remain absolute; relative owners append `ZoneName`. `star` renders as `*` and
   `___` is removed. Original fields, comments, custom properties, and other
-  record types remain intact and visible through read-only host details.
+  record types remain intact and editable through host details and advanced YAML.
 - Checks compare complete expected A-answer sets exactly. Missing/extra answers
   and observable MAC differences are mismatches; DNS failures, ping timeouts,
   and unavailable MACs remain incomplete evidence. `no_dns` skips DNS; missing
@@ -45,19 +45,37 @@ Phases 1–3 (foundation, reconciliation, and secure access) are implemented:
   Address/outlier pages are bounded to 256 rows; large subnet pagination uses
   direct address arithmetic, not enumeration of earlier pages.
 
-**This is not production-ready v1.** Authentication and access controls are
-implemented, but host write-back still has the starter's direct-write and unbound
-preview limitations. Use a disposable NetInfra copy until phase 4 delivers
-revision-bound reviewed changes, validation, backups, and atomic saves.
+Host changes now use a shared reviewed transaction service:
 
-Full host editing/import, reviewed atomic writes, complete scan scope/mode controls,
-start-rate limits, scheduling execution, age-based freshness, discovery coverage,
-filters, and progressive updates remain pending. The starter full-scan web route
-still uses prefix-based limits, including its default `/16` restriction; known-only
-refresh and address browsing have no CIDR-size cutoff. Stored schedules have no
-execution/UI yet and default to disabled. Latest undocumented ping responses are
-visible, but DHCP-pool context and discovery-to-host review are not implemented.
-Git behavior remains starter code, not the approved safe local-commit flow.
+- `/hosts` lists hosts with bounded pagination and read-only details. Editors can
+  create, update, or delete hosts using common fields or the complete advanced
+  YAML entry. Subnets and non-host sections remain read-only.
+- Imports accept pasted or uploaded YAML as a host list or a `Hosts:` wrapper.
+  Existing or repeated host names reject the whole batch; import never merges
+  with or overwrites an existing host.
+- Every mutation presents a full-file diff and validation findings. Apply posts
+  only an opaque, one-use, actor-bound review token for the exact proposed bytes
+  and source revision. Stale, altered, replayed, or direct apply requests fail.
+- Complete proposal validation rejects malformed host structure, invalid known
+  values, duplicate names, conflicting MACs, and eligible addresses outside
+  declared subnets. Consistent shared-IP records and live network differences do
+  not block a configuration save.
+- Writes serialize within the application, recheck the source revision immediately
+  before an atomic replacement, preserve file mode and round-trip YAML comments,
+  preambles, quotes, ordering, custom fields, and unrelated sections. External
+  writers that ignore app locks still require operational coordination.
+- Backups default to `./ipman-backups` outside the source Git checkout, with 20
+  retained copies. Configure `backup_dir` and `backup_retention` for deployment.
+- Optional Git validates the configured checkout root, current branch and clean
+  tree without switching branches. It commits only the saved NetInfra file, never
+  pushes, reports commit failure separately from a successful file save, and
+  provides a guarded retry. Remove retired `git_push` and `git_remote` settings.
+
+**This is not production-ready v1.** Phases 5–6 remain: complete scan scope/modes,
+rate bounds and confirmation, schedule execution/DST behavior, discovery coverage,
+age-based freshness, search/filtering/progressive updates, DHCP context, and full
+deployment/UI acceptance. Validate host writes first against a disposable
+NetInfra copy. The existing full-scan route still has a `/16` restriction.
 
 ## Development quick start
 
@@ -93,6 +111,18 @@ path, separate from NetInfra, settings, credentials, and audit logs. SQLite is
 required: there is no memory fallback. Parent directories are created at explicit
 startup. `completed_job_retention` defaults to 100; zero keeps no terminal jobs.
 Latest observations and schedule definitions are retained across restarts.
+
+Host backups default to `./ipman-backups`, outside the detected source Git
+checkout, with `backup_retention: 20`. Set `backup_dir` to protected persistent
+storage outside the checkout; zero retention is rejected.
+
+Optional local commits use `git_enabled`, `git_repo_path`, and `git_branch`.
+The repository path must be the checkout root, the current branch must match,
+and the tree must be clean before saving. Commits include only the NetInfra
+source; there is no automatic push. A post-save commit failure is reported
+separately and can be retried after resolving the Git failure. The app never
+switches branches. Retired `git_push` and `git_remote` settings are rejected
+and must be removed during configuration migration.
 
 SQLite schema 3 adds durable hashed sessions and expiring, one-use OIDC
 transactions. The schema-2 migration of phase-1 observations is retained: old
@@ -223,14 +253,17 @@ External syslog retention is the operator's responsibility.
 ```
 
 Tests use temporary files/databases and simulated probes/provider responses.
-The suite passes **396 tests**, including session forgery/expiry/revocation,
-CSRF, every role and both anonymous-view settings, OIDC signatures/claims/failure
-paths, recovery, private configuration writes, proxy trust, audit redaction and
-rotation, plus the earlier inventory/lifecycle coverage.
+The full suite passes **501 tests**, including transactional host edits/import,
+stale/tampered previews, semantic conflicts, atomic writes and backups, Git
+branch/dirty/retry behavior, session forgery/expiry/revocation, CSRF, every role
+and both anonymous-view settings, OIDC signature/claim failures, recovery,
+private configuration writes, proxy trust, audit redaction/rotation, and earlier
+inventory/lifecycle coverage.
 
-An isolated Uvicorn/browser smoke completed real signed OIDC exchanges against
-a temporary local provider simulator for viewer/editor/administrator identities,
-verified role restrictions, editor checks, protected settings/audit, anonymous
-read-only access, CLI recovery, forced password change, and session revocation.
-No external identity provider or live network scan was used. Production write
-safety and complete v1 acceptance remain in phases 4–6.
+An isolated Uvicorn/browser smoke completed signed OIDC exchanges against a
+temporary local provider simulator for viewer/editor/administrator identities,
+verified role restrictions, protected settings/audit, anonymous read-only access,
+CLI recovery, forced password change, and session revocation. A separate running
+Uvicorn/browser smoke rendered the paginated host list against isolated temporary
+configuration and data. Host mutation workflows used temporary-file tests; no
+external identity provider or live network probe was used. Phases 5–6 remain.

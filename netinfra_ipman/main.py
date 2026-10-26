@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import hashlib
 import os
-import shutil
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from ipaddress import IPv4Address, IPv4Network, collapse_addresses, ip_network
 from pathlib import Path
 from io import StringIO
-from tempfile import NamedTemporaryFile
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
@@ -25,14 +22,12 @@ from .audit import AuditLogger, source_ip as audit_source_ip
 from .persistence import RuntimeStore
 from .checks import reconcile
 from .config import AppConfig, SECRET_FIELDS, load_config, public_settings, save_config
-from .gitops import commit_changes, ensure_clean_checkout
+from .hostwrites import HostWriteError, HostWriteService
 from .models import Inventory
 from .netinfra import (
     NetInfraError,
-    append_discovered_host,
     load_netinfra,
     load_inventory,
-    save_netinfra,
 )
 from .scanner import ScanManager
 from .oidc import OidcClient, OIDCError
@@ -76,6 +71,7 @@ class Services:
     scanner: ScanManager
     security: SecurityManager
     oidc: OidcClient
+    hostwrites: HostWriteService
 
 
 def create_app(settings: AppConfig | None = None) -> FastAPI:
@@ -99,7 +95,7 @@ def create_app(settings: AppConfig | None = None) -> FastAPI:
                 security = SecurityManager(config, store)
                 oidc = OidcClient(config, store)
                 cleanup.push_async_callback(oidc.close)
-                application.state.services = Services(config, store, audit, scanner, security, oidc)
+                application.state.services = Services(config, store, audit, scanner, security, oidc, HostWriteService(config))
                 yield
         finally:
             if hasattr(application.state, "services"):
@@ -108,6 +104,11 @@ def create_app(settings: AppConfig | None = None) -> FastAPI:
     application = FastAPI(title="NetInfra IP Manager", lifespan=lifespan)
     application.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
     application.include_router(router)
+    @application.exception_handler(HostWriteError)
+    async def host_write_error(request: Request, exc: HostWriteError):
+        return templates.TemplateResponse(request, "write_error.html", {
+            "user": request.app.state.services.security.current_user(request), "error": str(exc),
+        }, status_code=exc.status_code)
 
     @application.exception_handler(401)
     async def unauthenticated(request: Request, exc: HTTPException):
@@ -243,17 +244,13 @@ async def outliers(request: Request, page: int = Query(1, ge=1), user: Principal
 
 @router.get("/hosts/{host_index}", response_class=HTMLResponse)
 async def host_details(request: Request, host_index: int, user: Principal | None = Depends(require_viewer)):
-    try:
-        data = load_netinfra(request.app.state.services.config.netinfra_path)
-    except NetInfraError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    data, revision = await asyncio.to_thread(host_document, request.app.state.services.config)
     hosts = data.get("Hosts")
     if not isinstance(hosts, list) or not 0 <= host_index < len(hosts):
         raise HTTPException(status_code=404, detail="Host does not exist")
-    output = StringIO()
-    YAML().dump(hosts[host_index], output)
     return templates.TemplateResponse(request, "host.html", {
-        "host_index": host_index, "host_yaml": output.getvalue(), "user": user,
+        "host_index": host_index, "host_yaml": yaml_text(hosts[host_index]),
+        "user": user, "revision": revision,
     })
 
 
@@ -302,68 +299,138 @@ async def cancel_scan(request: Request, job_id: str, user: Principal = Depends(r
     return RedirectResponse("/", status_code=303)
 
 
+def host_document(config: AppConfig) -> tuple[dict[str, Any], str]:
+    # Read once: the form's revision must identify the exact document displayed.
+    from .netinfra import _parse
+    content = Path(config.netinfra_path).read_bytes()
+    data = _parse(content)
+    if not isinstance(data, dict):
+        raise HostWriteError("Top-level document must be a mapping", 400)
+    return data, hashlib.sha256(content).hexdigest()
+
+
+def yaml_text(data: Any) -> str:
+    output = StringIO()
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    yaml.dump(data, output)
+    return output.getvalue()
+
+
+@router.get("/hosts", response_class=HTMLResponse)
+async def hosts_page(request: Request, page: int = Query(1, ge=1), user: Principal | None = Depends(require_viewer)):
+    data, revision = await asyncio.to_thread(host_document, request.app.state.services.config)
+    hosts = data.get("Hosts", [])
+    if not isinstance(hosts, list):
+        raise HostWriteError("Hosts must be a list", 400)
+    pages = max(1, (len(hosts) + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page > pages:
+        raise HTTPException(404, "Host page does not exist")
+    return templates.TemplateResponse(request, "hosts.html", {
+        "user": user, "hosts": list(enumerate(hosts[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], (page - 1) * PAGE_SIZE)),
+        "page": page, "pages": pages, "request_revision": revision,
+    })
+
+
 @router.get("/add", response_class=HTMLResponse)
-async def add_form(request: Request, ip: str, user: Principal = Depends(require_editor)):
-    return templates.TemplateResponse(request, "add.html", {"ip": ip, "user": user})
+async def add_form(request: Request, ip: str = "", user: Principal = Depends(require_editor)):
+    _, revision = await asyncio.to_thread(host_document, request.app.state.services.config)
+    return templates.TemplateResponse(request, "add.html", {
+        "user": user, "revision": revision, "operation": "create", "host_index": "",
+        "host_yaml": yaml_text({"Name": "new-host", "Records": [{"ZoneName": "example.test", "Target": ip}]}),
+        "host": {}, "record": {"Target": ip},
+    })
 
 
-@router.post("/add/preview", response_class=HTMLResponse)
-async def add_preview(
-    request: Request,
-    name: str = Form(...),
-    zone_name: str = Form(...),
-    target: str = Form(...),
-    mac: str = Form(""),
-    comment: str = Form(""),
-    user: Principal = Depends(require_editor),
-):
-    config = request.app.state.services.config
-    data = load_netinfra(config.netinfra_path)
-    before = Path(config.netinfra_path).read_text(encoding="utf-8")
-    append_discovered_host(data, name, zone_name, target, mac or None, comment or None)
-    with NamedTemporaryFile("w+", encoding="utf-8", delete=False) as temp:
-        temp_path = Path(temp.name)
-    save_netinfra(temp_path, data)
-    after = temp_path.read_text(encoding="utf-8")
-    temp_path.unlink(missing_ok=True)
-    diff = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile="current", tofile="proposed"))
-    return templates.TemplateResponse(
-        request,
-        "preview.html",
-        {"diff": diff, "form": {"name": name, "zone_name": zone_name, "target": target, "mac": mac, "comment": comment}, "user": user},
-    )
+@router.get("/hosts/{host_index}/edit", response_class=HTMLResponse)
+async def edit_form(request: Request, host_index: int, user: Principal = Depends(require_editor)):
+    data, revision = await asyncio.to_thread(host_document, request.app.state.services.config)
+    hosts = data.get("Hosts", [])
+    if not isinstance(hosts, list) or not 0 <= host_index < len(hosts):
+        raise HTTPException(404, "Host does not exist")
+    host = hosts[host_index]
+    records = host.get("Records", []) if isinstance(host, dict) else []
+    return templates.TemplateResponse(request, "add.html", {
+        "user": user, "revision": revision, "operation": "update", "host_index": host_index,
+        "host_yaml": yaml_text(host), "host": host if isinstance(host, dict) else {},
+        "record": records[0] if isinstance(records, list) and records and isinstance(records[0], dict) else {},
+    })
 
 
-@router.post("/add/commit")
-async def add_commit(
-    request: Request,
-    name: str = Form(...),
-    zone_name: str = Form(...),
-    target: str = Form(...),
-    mac: str = Form(""),
-    comment: str = Form(""),
-    user: Principal = Depends(require_editor),
-):
+@router.get("/import", response_class=HTMLResponse)
+async def import_form(request: Request, user: Principal = Depends(require_editor)):
+    _, revision = await asyncio.to_thread(host_document, request.app.state.services.config)
+    return templates.TemplateResponse(request, "import.html", {
+        "user": user, "revision": revision,
+        "starter": yaml_text([{"Name": "new-host", "Records": [{"RRType": "no_dns", "Target": "192.0.2.1"}]}]),
+    })
+
+
+@router.post("/hosts/preview", response_class=HTMLResponse)
+async def host_preview(request: Request, user: Principal = Depends(require_editor)):
     services = request.app.state.services
-    config, audit = services.config, services.audit
-    ensure_clean_checkout(config)
-    path = Path(config.netinfra_path)
-    data = load_netinfra(path)
-    before = path.read_bytes()
-    backup = path.with_name(f"{path.name}.{Path.cwd().name}.bak")
-    timestamped = path.with_suffix(path.suffix + f".{__import__('datetime').datetime.utcnow().strftime('%Y%m%d%H%M%S')}.bak")
-    shutil.copy2(path, timestamped)
-    append_discovered_host(data, name, zone_name, target, mac or None, comment or None)
-    save_netinfra(path, data)
-    after = path.read_bytes()
-    audit.record(user.subject, source_ip(request), "write_back", f"Added {target} to Hosts",
-                 before={"revision": hashlib.sha256(before).hexdigest()},
-                 after={"revision": hashlib.sha256(after).hexdigest()})
-    relative = str(path.relative_to(config.git_repo_path)) if config.git_enabled else str(path)
-    commit_changes(config, f"Add discovered host {target}", [relative])
-    if backup.exists():
-        backup.unlink()
-    return RedirectResponse("/", status_code=303)
+    form = await request.form()
+    operation = str(form.get("operation", "create"))
+    revision = str(form.get("revision", ""))
+    try:
+        host_index = int(str(form["host_index"])) if form.get("host_index") else None
+    except ValueError:
+        raise HostWriteError("Invalid host index", 400) from None
+    payload = str(form.get("host_yaml", ""))
+    upload = form.get("upload")
+    if operation == "import" and upload is not None and getattr(upload, "filename", ""):
+        try:
+            payload = (await upload.read()).decode("utf-8")
+        except UnicodeDecodeError:
+            raise HostWriteError("Upload must be UTF-8 YAML", 400) from None
+    if operation in {"create", "update"} and form.get("mode") == "common":
+        data, current_revision = await asyncio.to_thread(host_document, services.config)
+        if revision != current_revision:
+            raise HostWriteError("Source changed. Reload the form and review again.", 409)
+        if operation == "update":
+            hosts = data.get("Hosts", [])
+            if not isinstance(hosts, list) or host_index is None or not 0 <= host_index < len(hosts):
+                raise HostWriteError("Host does not exist", 404)
+            host = hosts[host_index]
+            if not isinstance(host, dict):
+                raise HostWriteError("Use advanced YAML to repair this host", 400)
+        else:
+            host = {"Name": "", "Records": [{}]}
+        host["Name"] = str(form.get("name", ""))
+        records = host.setdefault("Records", [])
+        if not isinstance(records, list) or (records and not isinstance(records[0], dict)):
+            raise HostWriteError("Use advanced YAML to repair Records", 400)
+        if not records:
+            records.append({})
+        for field, key in (("zone_name", "ZoneName"), ("target", "Target"), ("mac", "MAC"),
+                           ("comment", "Comment"), ("rrtype", "RRType"), ("source", "Source"), ("alt_hostname", "AltHostName")):
+            value = str(form.get(field, ""))
+            if value or key in records[0]:
+                records[0][key] = value
+        payload = yaml_text(host)
+    preview = await asyncio.to_thread(services.hostwrites.preview, user.subject, revision, operation, payload, host_index)
+    return templates.TemplateResponse(request, "preview.html", {"user": user, "preview": preview})
+
+
+@router.post("/hosts/apply", response_class=HTMLResponse)
+async def host_apply(request: Request, user: Principal = Depends(require_editor)):
+    services = request.app.state.services
+    form = await request.form()
+    if set(form) - {"csrf_token", "token"}:
+        raise HostWriteError("Apply accepts only the reviewed token; review changes again.", 400)
+    result = await asyncio.to_thread(services.hostwrites.apply, user.subject, str(form.get("token", "")))
+    services.audit.record(user.subject, source_ip(request), "write_back", "Reviewed host change saved",
+                          after={"revision": result.revision, "git_status": result.git_status})
+    return templates.TemplateResponse(request, "write_result.html", {"user": user, "result": result})
+
+
+@router.post("/hosts/commit-retry", response_class=HTMLResponse)
+async def host_commit_retry(request: Request, token: str = Form(...), user: Principal = Depends(require_editor)):
+    services = request.app.state.services
+    result = await asyncio.to_thread(services.hostwrites.retry_commit, user.subject, token)
+    services.audit.record(user.subject, source_ip(request), "git_retry", result.git_status,
+                          after={"revision": result.revision})
+    return templates.TemplateResponse(request, "write_result.html", {"user": user, "result": result})
 
 
 @router.get("/options", response_class=HTMLResponse)
@@ -433,6 +500,7 @@ async def options_save(request: Request, user: Principal = Depends(require_admin
     services.audit = replacement_audit
     services.scanner.config = config
     services.security.config = config
+    services.hostwrites.config = config
     return RedirectResponse("/options", status_code=303)
 
 

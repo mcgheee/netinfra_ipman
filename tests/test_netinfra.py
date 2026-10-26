@@ -7,7 +7,6 @@ import pytest
 
 from netinfra_ipman.netinfra import (
     NetInfraError,
-    append_discovered_host,
     build_inventory,
     fqdn_for,
     load_inventory,
@@ -227,14 +226,6 @@ def test_invalid_yaml_is_load_error_and_invalid_structure_is_inventory_diagnosti
         load_netinfra(path)
 
 
-def test_append_discovered_host_round_trip(tmp_path):
-    data = {"Hosts": []}
-    append_discovered_host(data, "newhost", "example.com", "10.0.0.8", None, "ignored")
-    path = tmp_path / "NetInfra.yml"
-    save_netinfra(path, data)
-    loaded = load_netinfra(path)
-    assert loaded["Hosts"][0]["Name"] == "newhost"
-    assert build_inventory(loaded).groups["10.0.0.8"].mac is None
 
 
 @pytest.mark.parametrize("prefix", [

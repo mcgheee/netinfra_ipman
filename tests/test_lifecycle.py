@@ -73,7 +73,8 @@ def test_separate_applications_have_isolated_services(tmp_path):
 def test_unavailable_database_fails_startup(tmp_path):
     config = settings(tmp_path)
     Path(config.sqlite_path).mkdir()
-    with pytest.raises((OSError, sqlite3.OperationalError)):
+    # A directory is rejected either by validated configuration or SQLite startup.
+    with pytest.raises((OSError, sqlite3.OperationalError, ValueError)):
         with TestClient(create_app(config)):
             pytest.fail('Startup must not fall back to process memory')
 

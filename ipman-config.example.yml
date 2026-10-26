@@ -7,6 +7,9 @@ audit_to_syslog: false
 audit_max_bytes: 10485760
 audit_backup_count: 5
 sqlite_path: ./ipman.sqlite3
+# Backups must be outside the source checkout, even when Git commits are disabled.
+backup_dir: ../ipman-backups
+backup_retention: 20
 completed_job_retention: 100
 scan_concurrency: 128
 ping_timeout: 1.0
@@ -21,8 +24,6 @@ max_subnet_prefix: 16
 git_enabled: false
 git_repo_path: .
 git_branch: main
-git_push: false
-git_remote: origin
 session_timeout_minutes: 60
 lockout_attempts: 5
 lockout_minutes: 15

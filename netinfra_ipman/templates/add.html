@@ -1,13 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Add discovered IP</h2>
-<form method="post" action="/add/preview" class="stack">
+<h2>{% if operation == 'update' %}Edit host {{ host_index + 1 }}{% else %}Create host{% endif %}</h2>
+<form method="post" action="/hosts/preview" class="stack">
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <label>Name <input name="name" required></label>
-  <label>ZoneName <input name="zone_name" required></label>
-  <label>Target <input name="target" value="{{ ip }}" required></label>
-  <label>MAC <input name="mac" placeholder="optional"></label>
-  <label>Comment <input name="comment" placeholder="Placeholder when MAC is empty"></label>
-  <button>Preview diff</button>
+  <input type="hidden" name="operation" value="{{ operation }}">
+  <input type="hidden" name="revision" value="{{ revision }}">
+  <input type="hidden" name="host_index" value="{{ host_index }}">
+  <fieldset><legend>Common fields (first record)</legend>
+    <label>Name <input name="name" value="{{ host.get('Name', '') }}" required></label>
+    <label>ZoneName <input name="zone_name" value="{{ record.get('ZoneName', '') }}"></label>
+    <label>Target <input name="target" value="{{ record.get('Target', '') }}"></label>
+    <label>RRType <input name="rrtype" value="{{ record.get('RRType', '') }}" placeholder="A"></label>
+    <label>Source <input name="source" value="{{ record.get('Source', '') }}"></label>
+    <label>AltHostName <input name="alt_hostname" value="{{ record.get('AltHostName', '') }}"></label>
+    <label>MAC <input name="mac" value="{{ record.get('MAC', '') }}"></label>
+    <label>Comment <input name="comment" value="{{ record.get('Comment', '') }}"></label>
+  </fieldset>
+  <label><input type="radio" name="mode" value="common" checked> Use common fields</label>
+  <label><input type="radio" name="mode" value="advanced"> Use complete host YAML</label>
+  <label>Complete host YAML <textarea name="host_yaml" rows="18" spellcheck="false">{{ host_yaml }}</textarea></label>
+  <button>Review complete file diff</button>
 </form>
 {% endblock %}

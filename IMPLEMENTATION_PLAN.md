@@ -1,7 +1,7 @@
 # NetInfra IPAM v1 implementation plan
 
-This plan implements [the approved design](DESIGN.md). Phases 1–3 are implemented;
-phases 4–6 remain pending. Design policies and initial operational defaults are
+This plan implements [the approved design](DESIGN.md). Phases 1–4 are implemented;
+phases 5–6 remain pending. Design policies and initial operational defaults are
 approved; environment-specific values are supplied at deployment time.
 
 ## 1. Application and persistence foundation
@@ -146,6 +146,32 @@ Verify that semantic conflicts block writes until resolved, including direct
 apply requests that bypass the preview UI. Valid shared-IP definitions and live
 network mismatches alone must not cause validation failures.
 
+Delivered: `/hosts` provides paginated details and editor-only create/update/delete,
+common-field editing, and complete advanced host YAML. Pasted and uploaded YAML
+imports accept a host list or `Hosts:` wrapper and reject entire batches on existing
+or repeated names. All operations share `HostWriteService`: a one-use opaque
+actor-bound token binds the exact proposed bytes to the source revision, displays
+a full-file diff, and rejects stale, altered, expired, or direct apply requests.
+Complete-document validation blocks malformed structure, invalid known field
+values, duplicate names, conflicting MACs, and eligible out-of-subnet targets;
+consistent shared IPs and live observations do not block configuration edits.
+
+Writes serialize in-process, recheck revision immediately before replacement,
+preserve round-trip YAML data, make private backups in configurable external
+`backup_dir` (default `./ipman-backups`, retention 20), and atomically replace
+the source. Optional Git validates the exact checkout/branch without switching,
+commits only the NetInfra file, never pushes, reports post-save commit failure
+separately, and supports guarded retry. Retired `git_push`/`git_remote` settings
+now produce migration errors. External writers that ignore app locks remain an
+operational coordination limit.
+
+Verified: `.venv/bin/python -m pytest -q` passes 501 tests with one
+Starlette/httpx TestClient deprecation warning. Tests cover transactional edge
+cases, Git branch/dirty/retry behavior, create/update/delete/import flows,
+authorization/CSRF, stale/direct/replayed apply, and backups. A running
+Uvicorn/browser smoke rendered the host list from isolated temporary data;
+network probes were not run.
+
 ## 5. Scans, schedules, and runtime limits
 
 - Introduce scan requests with explicit target scope and mode: all declared
@@ -209,13 +235,11 @@ The interface remains responsive during large streamed scans.
 
 ## Verification and rollout
 
-The test dependencies are now installed in the development virtual environment,
-and the phase-3 suite passes. The original inspection had no pytest baseline.
-Add focused tests with each subsystem and use mocked network probes by default.
-Use an isolated sample NetInfra file and controlled test networks for integration checks.
+The test dependencies are installed in the development virtual environment and
+the complete phase-4 suite passes. Use focused tests with mocked probes by default
+and isolated NetInfra files for integration checks.
 
-Deliver in the order above. Do not deploy the remaining direct-write paths as
-the finished application or restore legacy unsigned-cookie authentication. Validate against a copy of a
-representative NetInfra file before connecting the production file and enabling
-schedules. Configure OIDC, DNS views, persistent storage, and scan rates for the
-actual deployment; keep credentials out of source control.
+Phase 4 reviewed host writes are implemented; do not reintroduce direct writes,
+unsigned-cookie authentication, or automatic Git push. Before connecting a
+production NetInfra file, validate deployment paths, backup retention, OIDC, DNS
+views, persistent storage, and scan limits. Phases 5–6 remain required for v1.

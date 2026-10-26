@@ -1,11 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Review write-back diff</h2>
-<pre class="diff">{{ diff }}</pre>
-<form method="post" action="/add/commit">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  {% for key, value in form.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
-  <button>Confirm write</button>
-  <a href="/">Cancel</a>
-</form>
+<h2>Review proposed host change</h2>
+<p>Source revision <code>{{ preview.revision }}</code>; proposal is bound to this review. Apply sends only the opaque review token.</p>
+{% if preview.findings %}<section class="banner error"><h3>Blocked by validation</h3><ul>{% for finding in preview.findings %}<li>{{ finding }}</li>{% endfor %}</ul></section>{% endif %}
+<pre class="diff">{{ preview.diff }}</pre>
+{% if not preview.findings %}<form method="post" action="/hosts/apply"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="token" value="{{ preview.token }}"><button>Apply reviewed change</button></form>{% endif %}
 {% endblock %}

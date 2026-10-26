@@ -12,6 +12,8 @@ def test_missing_config_returns_defaults_without_creating_files(tmp_path, monkey
     assert config.config_path == str(path)
     assert not path.parent.exists()
     assert list(tmp_path.iterdir()) == []
+    assert config.backup_dir == "./ipman-backups"
+    assert config.backup_retention == 20
 
 
 def test_load_uses_environment_unless_path_is_explicit(tmp_path, monkeypatch):
@@ -76,6 +78,11 @@ def test_rejects_nonmapping_configuration(tmp_path, contents):
         ("git_repo_path: ''", "git_repo_path"),
         ("git_branch: ''", "git_branch"),
         ("git_remote: ''", "git_remote"),
+        ("git_push: false", "local commits only"),
+        ("backup_dir: ''", "backup_dir"),
+        ("backup_retention: 0", "backup_retention"),
+        ("backup_retention: true", "backup_retention"),
+        ("backup_retention: '20'", "backup_retention"),
     ],
 )
 def test_invalid_settings_fail_on_load(tmp_path, contents, message):
@@ -309,3 +316,56 @@ def test_settings_write_failure_preserves_previous_configuration(tmp_path, monke
         save_config(config)
     assert path.read_bytes() == original
     assert list(tmp_path.glob(".ipman-config-*")) == []
+
+
+@pytest.mark.parametrize("name", ["git_push", "git_remote"])
+def test_removed_git_options_require_migration_without_echoing_values(tmp_path, name):
+    path = tmp_path / "settings.yml"
+    path.write_text(f"{name}: secret-value-not-for-errors\n")
+    with pytest.raises(ValueError, match="local commits only") as error:
+        load_config(path)
+    assert "secret-value-not-for-errors" not in str(error.value)
+
+
+@pytest.mark.parametrize("field", [
+    "netinfra_path", "config_path", "admin_file", "audit_log_file", "sqlite_path",
+])
+@pytest.mark.parametrize("layout", ["same", "backup_parent", "file_parent"])
+def test_backup_directory_cannot_overlap_protected_files(tmp_path, field, layout):
+    backup = tmp_path / "backups"
+    protected = {
+        "same": backup,
+        "backup_parent": backup / "protected",
+        "file_parent": tmp_path,
+    }[layout]
+    with pytest.raises(ValueError, match=field):
+        AppConfig(backup_dir=str(backup), **{field: str(protected)})
+
+
+@pytest.mark.parametrize("field", [
+    "netinfra_path", "config_path", "admin_file", "audit_log_file", "sqlite_path",
+])
+def test_protected_paths_must_not_be_directories(tmp_path, field):
+    with pytest.raises(ValueError, match=field):
+        AppConfig(**{field: str(tmp_path)})
+
+
+def test_backup_directory_cannot_be_a_file(tmp_path):
+    path = tmp_path / "backups"
+    path.write_text("not a directory")
+    with pytest.raises(ValueError, match="backup_dir"):
+        AppConfig(backup_dir=str(path))
+
+
+def test_backup_directory_symlink_cannot_overlap_source(tmp_path):
+    source = tmp_path / "source.yml"
+    source.write_text("{}")
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="backup_dir"):
+        AppConfig(netinfra_path=str(source), backup_dir=str(alias))
+
+
+def test_protected_file_paths_cannot_contain_one_another(tmp_path):
+    with pytest.raises(ValueError, match="must not contain"):
+        AppConfig(netinfra_path=str(tmp_path / "source"), admin_file=str(tmp_path / "source" / "admin"))

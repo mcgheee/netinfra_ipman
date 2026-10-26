@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Host change result</h2>
+{% if result.git_status == 'failed' %}<section class="banner error"><p>File saved successfully. Local Git commit failed: {{ result.git_error }}</p><p>Backup: <code>{{ result.backup }}</code></p>
+{% if result.retry_token %}<form method="post" action="/hosts/commit-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="token" value="{{ result.retry_token }}"><button>Retry local commit</button></form>{% endif %}</section>
+{% else %}<p>File saved. Git outcome: {{ result.git_status }}.</p><p>Backup: <code>{{ result.backup }}</code></p>{% endif %}
+<a href="/hosts">Return to hosts</a>
+{% endblock %}

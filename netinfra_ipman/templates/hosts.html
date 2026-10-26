@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Hosts</h2>
+{% if user and user.can_edit %}<p><a href="/add">Create host</a> · <a href="/import">Import hosts</a></p>{% endif %}
+<table><thead><tr><th>Name</th><th>Records</th><th>Actions</th></tr></thead><tbody>
+{% for index, host in hosts %}
+<tr><td>{% if host is mapping %}{{ host.get('Name', 'Unnamed') }}{% else %}Invalid host entry{% endif %}</td>
+<td>{% if host is mapping and host.get('Records') is sequence %}{{ host.get('Records')|length }}{% else %}—{% endif %}</td>
+<td><a href="/hosts/{{ index }}">View</a>{% if user and user.can_edit %} · <a href="/hosts/{{ index }}/edit">Edit</a>
+<form method="post" action="/hosts/preview" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="revision" value="{{ request_revision }}"><input type="hidden" name="operation" value="delete"><input type="hidden" name="host_index" value="{{ index }}"><button>Delete</button></form>{% endif %}</td></tr>
+{% endfor %}
+</tbody></table>
+<nav class="pagination">{% if page > 1 %}<a href="/hosts?page={{ page - 1 }}">Previous</a>{% endif %}<span>Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a href="/hosts?page={{ page + 1 }}">Next</a>{% endif %}</nav>
+{% endblock %}

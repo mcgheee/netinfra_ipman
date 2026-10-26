@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Host entry {{ host_index + 1 }}</h2>
-<p>Complete original host properties, including custom fields and records excluded from IP inventory. Read-only in this phase; reviewed editing is planned for phase 4.</p>
 <pre class="diff">{{ host_yaml }}</pre>
+<p>{% if user and user.can_edit %}<a href="/hosts/{{ host_index }}/edit">Edit host</a>{% endif %} · <a href="/hosts">Hosts</a></p>
 {% endblock %}

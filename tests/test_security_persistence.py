@@ -90,7 +90,7 @@ def test_schema_three_upgrade_preserves_prior_state_and_protects_existing_file(t
     store.save_oidc_transaction("state", {"nonce": "secret"}, 100)
     store.close()
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == RuntimeStore.SCHEMA_VERSION
     store.initialize()
     assert store.get_session("hash", 99) == {"kind": "preauth"}
     assert store.consume_oidc_transaction("state", 99) == {"nonce": "secret"}

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
+
 from http.cookies import SimpleCookie
 from pathlib import Path
 import re
@@ -65,6 +67,8 @@ MUTATIONS = [
     ('/refresh', {'subnet': '192.0.2.1/32'}),
     ('/scan', {'subnet': '192.0.2.1/32'}),
     ('/scan/unknown/cancel', {}),
+    ('/schedules', {'scope': 'all', 'kind': 'interval', 'interval_seconds': '60'}),
+    ('/schedules/unknown/update', {'scope': 'all', 'kind': 'interval', 'interval_seconds': '60'}),
     ('/hosts/preview', {'operation': 'create'}),
     ('/hosts/apply', {'token': 'unreviewed'}),
     ('/options', {'scan_concurrency': '2'}),
@@ -80,7 +84,7 @@ def test_anonymous_view_setting_never_authorizes_probes_or_writes(environment, a
     client.cookies.set('ipman_user', 'admin')
     for path in ['/', '/outliers', '/hosts/0']:
         assert client.get(path).status_code == (200 if anonymous else 401)
-    for path in ['/options', '/audit', '/add?ip=192.0.2.1']:
+    for path in ['/options', '/audit', '/schedules', '/add?ip=192.0.2.1']:
         assert client.get(path).status_code == 401
     for path, body in MUTATIONS:
         assert client.post(path, data={**body, 'csrf_token': token}, follow_redirects=False).status_code == 401
@@ -116,7 +120,7 @@ def test_viewer_cannot_bypass_hidden_editor_or_administrator_controls(environmen
     before = Path(config.netinfra_path).read_bytes()
     for path in ['/', '/outliers', '/hosts/0']:
         assert client.get(path).status_code == 200
-    for path in ['/options', '/audit', '/add?ip=192.0.2.1']:
+    for path in ['/options', '/audit', '/schedules', '/add?ip=192.0.2.1']:
         assert client.get(path).status_code == 403
     for path, body in MUTATIONS:
         assert client.post(path, data={**body, 'csrf_token': token}, follow_redirects=False).status_code == 403
@@ -143,7 +147,110 @@ def test_editor_permissions_collect_evidence_but_settings_and_audit_require_admi
         assert config.oidc_client_secret not in page.text
     if role == Role.editor:
         assert client.post('/options', data={'scan_concurrency': '2', 'csrf_token': token}).status_code == 403
+    if role == Role.administrator:
+        created = client.post('/schedules', data={
+            'scope': 'all', 'target': '', 'mode': 'known-only', 'kind': 'interval',
+            'interval_seconds': '3600', 'csrf_token': token,
+        }, follow_redirects=False)
+        assert created.status_code == 303
+        schedule = client.portal.call(app.state.services.schedules.list)[0]
+        assert schedule['enabled'] is False
+        toggled = client.post(f"/schedules/{schedule['id']}/toggle", data={
+            'enabled': 'true', 'csrf_token': token,
+        }, follow_redirects=False)
+        assert toggled.status_code == 303
+        assert client.portal.call(app.state.services.schedules.list)[0]['enabled'] is True
+        updated = client.post(f"/schedules/{schedule['id']}/update", data={
+            'name': 'updated schedule', 'scope': 'all', 'target': '', 'mode': 'discovery-only',
+            'kind': 'interval', 'interval_seconds': '7200', 'csrf_token': token,
+        }, follow_redirects=False)
+        assert updated.status_code == 303
+        saved = client.portal.call(app.state.services.schedules.list)[0]
+        assert saved['name'] == 'updated schedule'
+        assert saved['mode'] == 'discovery-only'
+        assert saved['interval_seconds'] == 7200.0
+        schedule_page = client.get('/schedules')
+        assert schedule_page.status_code == 200
+        assert 'Save schedule' in schedule_page.text
+def test_scan_confirmation_and_rendered_modes_are_enforced_at_request_boundary(environment, monkeypatch):
+    config, app, client = environment
+    app.state.services.config.manual_scan_confirmation_threshold = 0
+    token = sign_in(app, client, Role.editor)
+    monkeypatch.setattr('netinfra_ipman.checks.check_ping', lambda *args: (True, 1.0, None))
+    monkeypatch.setattr('netinfra_ipman.scanner.check_ping', lambda *args: (True, 1.0, None))
+    page = client.get('/')
+    assert page.status_code == 200
+    assert 'name="target" value="192.0.2.1/32"' in page.text
+    assert 'Discovery only' in page.text
+    all_scope = client.post('/scan', data={
+        'scope': 'all', 'target': '192.0.2.1/32', 'csrf_token': token,
+    })
+    assert all_scope.status_code == 200
+    assert 'covers 1 addresses' in all_scope.text
+    assert client.portal.call(app.state.services.store.list_jobs) == []
+    confirmation = client.post('/scan', data={
+        'scope': 'ip', 'target': '192.0.2.1', 'mode': 'known-only', 'csrf_token': token,
+    })
+    assert confirmation.status_code == 200
+    assert 'covers 1 addresses' in confirmation.text
+    assert client.portal.call(app.state.services.store.list_jobs) == []
+    started = client.post('/scan', data={
+        'scope': 'ip', 'target': '192.0.2.1', 'mode': 'known-only',
+        'confirm_large': 'true', 'csrf_token': token,
+    }, follow_redirects=False)
+    assert started.status_code == 303
 
+    async def wait_for_scan():
+        runner = app.state.services.scanner._runner
+        assert runner is not None
+        await runner
+
+    client.portal.call(wait_for_scan)
+    assert client.portal.call(app.state.services.store.list_jobs)[0]['status'] == 'complete'
+
+
+def test_selected_subnet_scan_form_submits_and_runs_selected_target(environment, monkeypatch):
+    _, app, client = environment
+    token = sign_in(app, client, Role.editor)
+    monkeypatch.setattr('netinfra_ipman.checks.check_ping', lambda *args: (True, 1.0, None))
+    monkeypatch.setattr('netinfra_ipman.scanner.check_ping', lambda *args: (True, 1.0, None))
+    subnet = '192.0.2.1/32'
+    page = client.get(f'/?subnet={subnet}')
+    assert page.status_code == 200
+    assert f'name="target" value="{subnet}"' in page.text
+    response = client.post('/scan', data={
+        'scope': 'subnet', 'target': subnet, 'mode': 'known-only', 'csrf_token': token,
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    async def wait_for_scan():
+        runner = app.state.services.scanner._runner
+        assert runner is not None
+        await runner
+    client.portal.call(wait_for_scan)
+    job = client.portal.call(app.state.services.store.list_jobs)[0]
+    assert job['status'] == 'complete'
+    assert job['target'] == subnet
+
+
+def test_scheduled_failure_is_audited_after_options_replace_logger(environment):
+    config, app, client = environment
+    token = sign_in(app, client, Role.administrator)
+    saved = client.post('/options', data={
+        'allow_anonymous_viewing': 'on', 'csrf_token': token,
+    }, follow_redirects=False)
+    assert saved.status_code == 303
+    now = datetime.now(timezone.utc)
+    previous = now - timedelta(seconds=61)
+    manager = app.state.services.schedules
+    schedule = client.portal.call(lambda: manager.create({
+        'kind': 'interval', 'interval_seconds': 60, 'scope': 'range',
+        'target': '198.51.100.10-198.51.100.10', 'mode': 'known-only',
+    }, now=previous))
+    client.portal.call(lambda: manager.toggle(schedule['id'], True, now=previous))
+    client.portal.call(manager.tick, now)
+    log = Path(config.audit_log_file).read_text()
+    assert '"action": "scan.scheduled.failure"' in log
+    assert 'Targets must be within declared IPv4 subnets' in log
 
 @pytest.mark.parametrize('value', ['invalid', '-1'])
 def test_rejected_admin_settings_preserve_running_and_saved_configuration(environment, value):

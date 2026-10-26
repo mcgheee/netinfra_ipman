@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Confirm large scan</h2>
+<p>This {{ scan_request.mode }} scan covers {{ total }} addresses, above the configured confirmation threshold of {{ threshold }}.</p>
+<p>The scan uses bounded concurrency and start rate. Results may be partial if cancelled.</p>
+<form method="post" action="/scan">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="scope" value="{{ scan_request.scope }}">
+  <input type="hidden" name="target" value="{{ scan_request.target }}">
+  <input type="hidden" name="mode" value="{{ scan_request.mode }}">
+  <input type="hidden" name="confirm_large" value="true">
+  <button>Confirm and start scan</button>
+  <a href="/">Cancel</a>
+</form>
+{% endblock %}

@@ -1,8 +1,8 @@
 # NetInfra IPAM v1 implementation plan
 
-This plan implements [the approved design](DESIGN.md). Phases 1–4 are implemented;
-phases 5–6 remain pending. Design policies and initial operational defaults are
-approved; environment-specific values are supplied at deployment time.
+Phases 1–5 are implemented; phase 6 remains pending. Design policies and initial
+operational defaults are approved; environment-specific values are supplied at
+deployment time.
 
 ## 1. Application and persistence foundation
 
@@ -25,8 +25,9 @@ Delivered: explicit `create_app()`/FastAPI lifespan, validated settings, SQLite
 schema version 1, durable observations/schedule definitions/job summaries, and
 interrupted-job recovery. Redis and web-startup administrator provisioning are
 removed. One tracked runner streams bounded probes and awaits cleanup on shutdown.
-Schedule execution and the complete scan contract remain phase 5; web routes and
-inventory behavior not covered by this phase retain their documented starter gaps.
+The runner's full scan contract and schedule dispatch are completed in phase 5;
+web workflows not covered by phase 1 retained their documented gaps until later
+phases.
 
 Phase-1 verification: 82 tests passed using temporary storage and simulated probes. A standalone
 runner/reopen smoke retained observations and a disabled schedule and recovered a
@@ -210,6 +211,33 @@ Use a controlled clock to verify concurrency and start-rate bounds. Confirm
 that 4,096-target manual scans need no large-scan confirmation and 4,097-target
 scans do, including enforcement on direct requests.
 
+Delivered: shared `ScanRequest` planning supports all declared subnets, one
+subnet, an inclusive IP range, or one IP in full, known-only, or discovery-only
+mode. Plans validate every target against the declared-network union, deduplicate
+overlaps, retain `/31` and `/32` semantics, and stream inclusive address intervals
+without size cutoffs or address-sized allocations.
+
+The central runner enforces configurable concurrency (default 128) and serialized
+start spacing (default 100 checks/second). Manual requests above the configurable
+4,096-target default require explicit confirmation at both the web and runner
+boundaries. Cancellation awaits synchronous probe cleanup; progress, partial and
+failed status are durable. Observations remain sparse, and completed discovery
+coverage is compact and overlap-replaced in SQLite schema 4.
+
+Disabled-by-default interval/daily/weekly schedules use explicit IANA timezones.
+The administrator page creates, edits, enables/disables, and deletes schedules.
+Dispatch loads the current NetInfra inventory, coalesces one pending trigger per
+schedule, and never replays downtime. Nonexistent local times are skipped; repeated
+times run once. Jobs and schedules remain visibly incomplete/failed after interruption.
+
+Verified: phase 5's complete `.venv/bin/python -m pytest -q` suite passes 561
+tests with one Starlette/httpx TestClient deprecation warning. Target plans, runner
+rate/concurrency/confirmation, coverage, schedule lifecycle/DST/restart behavior,
+web authorization, and prior host/security/inventory behavior are covered. An
+isolated authenticated Uvicorn/browser smoke rendered scan and administrator
+schedule controls and stopped at the large-scan confirmation page; it launched
+no probes. No live network scan was used.
+
 ## 6. Web workflow and deployment
 
 - Add paginated subnet/address views, search, discrepancy filters, host details,
@@ -235,11 +263,13 @@ The interface remains responsive during large streamed scans.
 
 ## Verification and rollout
 
-The test dependencies are installed in the development virtual environment and
-the complete phase-4 suite passes. Use focused tests with mocked probes by default
-and isolated NetInfra files for integration checks.
+The complete test suite uses temporary files and simulated probes; isolated
+running-app checks exercise the changed web paths without scanning a live network.
 
-Phase 4 reviewed host writes are implemented; do not reintroduce direct writes,
-unsigned-cookie authentication, or automatic Git push. Before connecting a
-production NetInfra file, validate deployment paths, backup retention, OIDC, DNS
-views, persistent storage, and scan limits. Phases 5–6 remain required for v1.
+Phase 4 reviewed host writes and phase 5 scan/schedule behavior are implemented;
+do not reintroduce direct writes, unsigned-cookie authentication, automatic Git
+push, or unbounded scans. Phase 6 remains: search/filtering, HTMX progress refresh,
+DHCP-pool context, discovery-to-host review, age-based freshness, and deployment
+documentation/acceptance. Before connecting a production NetInfra file, validate
+deployment paths, backup retention, OIDC, DNS views, persistent storage, and scan
+limits.

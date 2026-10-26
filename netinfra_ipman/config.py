@@ -57,13 +57,13 @@ class AppConfig:
     backup_retention: int = 20
     completed_job_retention: int = 100
     scan_concurrency: int = 128
+    scan_start_rate: float = 100.0
+    manual_scan_confirmation_threshold: int = 4096
     ping_timeout: float = 1.0
     dns_timeout: float = 2.0
     dns_lifetime: float = 2.0
     dns_servers: list[str] = field(default_factory=list)
     subnet_dns_servers: dict[str, list[str]] = field(default_factory=dict)
-    large_subnet_prefix: int = 24
-    max_subnet_prefix: int = 16
     git_enabled: bool = False
     git_repo_path: str = "."
     git_branch: str = "main"
@@ -133,15 +133,12 @@ class AppConfig:
                 raise ValueError(f"{name} must be greater than zero")
         if self.completed_job_retention < 0:
             raise ValueError("completed_job_retention must be zero or greater")
-        for name in ("ping_timeout", "dns_timeout", "dns_lifetime"):
+        if self.manual_scan_confirmation_threshold < 0:
+            raise ValueError("manual_scan_confirmation_threshold must be zero or greater")
+        for name in ("ping_timeout", "dns_timeout", "dns_lifetime", "scan_start_rate"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and greater than zero")
-        for name in ("large_subnet_prefix", "max_subnet_prefix"):
-            if not 0 <= getattr(self, name) <= 32:
-                raise ValueError(f"{name} must be between 0 and 32")
-        if self.max_subnet_prefix > self.large_subnet_prefix:
-            raise ValueError("max_subnet_prefix must not exceed large_subnet_prefix")
         for server in self.dns_servers:
             try:
                 ip_address(server)
@@ -224,6 +221,13 @@ def _coerce_config(data: Any, config_path: str) -> AppConfig:
         raise ValueError("Configuration must be a YAML mapping of setting names to values")
     if "redis_url" in data:
         raise ValueError("redis_url is no longer supported; replace it with sqlite_path")
+    retired_scan = sorted(set(data) & {"large_subnet_prefix", "max_subnet_prefix"})
+    if retired_scan:
+        raise ValueError(
+            "Retired scan settings: " + ", ".join(retired_scan)
+            + "; remove prefix limits and use manual_scan_confirmation_threshold (default 4096)"
+            + " and scan_start_rate (default 100); all IPv4 subnet sizes are supported"
+        )
     retired_git = sorted(set(data) & {"git_push", "git_remote"})
     if retired_git:
         raise ValueError(

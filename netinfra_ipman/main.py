@@ -26,10 +26,11 @@ from .hostwrites import HostWriteError, HostWriteService
 from .models import Inventory
 from .netinfra import (
     NetInfraError,
-    load_netinfra,
     load_inventory,
 )
 from .scanner import ScanManager
+from .targets import ScanRequest, plan_targets
+from .schedules import ScheduleManager
 from .oidc import OidcClient, OIDCError
 from .security import (
     Principal,
@@ -69,6 +70,7 @@ class Services:
     store: RuntimeStore
     audit: AuditLogger
     scanner: ScanManager
+    schedules: ScheduleManager
     security: SecurityManager
     oidc: OidcClient
     hostwrites: HostWriteService
@@ -92,10 +94,13 @@ def create_app(settings: AppConfig | None = None) -> FastAPI:
                 cleanup.callback(close_audit)
                 scanner = ScanManager(config, store)
                 cleanup.push_async_callback(scanner.close)
+                schedules = ScheduleManager(config, store, scanner, audit)
+                schedules.start()
+                cleanup.push_async_callback(schedules.close)
                 security = SecurityManager(config, store)
                 oidc = OidcClient(config, store)
                 cleanup.push_async_callback(oidc.close)
-                application.state.services = Services(config, store, audit, scanner, security, oidc, HostWriteService(config))
+                application.state.services = Services(config, store, audit, scanner, schedules, security, oidc, HostWriteService(config))
                 yield
         finally:
             if hasattr(application.state, "services"):
@@ -220,6 +225,7 @@ async def index(request: Request, subnet: str | None = None, page: int = Query(1
             "pages": pages,
             "jobs": scanner.as_dicts(),
             "user": user,
+            "scan_threshold": config.manual_scan_confirmation_threshold,
         },
     )
 
@@ -255,39 +261,62 @@ async def host_details(request: Request, host_index: int, user: Principal | None
 
 
 @router.post("/refresh")
-async def refresh(request: Request, subnet: str = Form(...), user: Principal = Depends(require_editor)):
+async def refresh(
+    request: Request, subnet: str = Form(...), confirm_large: bool = Form(False),
+    user: Principal = Depends(require_editor),
+):
     services = request.app.state.services
     config, scanner, audit = services.config, services.scanner, services.audit
     inventory, errors = load_state(config)
     if inventory is None:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    network = declared_scope(subnet, inventory)
+    scan_request = ScanRequest("subnet", subnet, "known-only")
     try:
-        job = await scanner.refresh(str(network), inventory)
+        plan = plan_targets(scan_request, inventory)
+        if plan.total > config.manual_scan_confirmation_threshold and not confirm_large:
+            return templates.TemplateResponse(request, "scan_confirm.html", {
+                "user": user, "scan_request": scan_request, "total": plan.total,
+                "threshold": config.manual_scan_confirmation_threshold,
+            }, status_code=200)
+        job = await scanner.refresh(subnet, inventory, confirmed=confirm_large)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    audit.record(user.subject, source_ip(request), "refresh", f"Refresh job {job.id}: {job.status}, {job.progress}/{job.total} addresses")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(user.subject, source_ip(request), "refresh", f"Refresh job {job.id}: {job.status}, {plan.total} addresses")
     return RedirectResponse(f"/?subnet={subnet}", status_code=303)
 
 
 @router.post("/scan")
-async def scan(request: Request, subnet: str = Form(...), confirm_large: bool = Form(False), user: Principal = Depends(require_editor)):
+async def scan(
+    request: Request,
+    scope: str | None = Form(None),
+    target: str = Form(""),
+    mode: str = Form("full"),
+    subnet: str | None = Form(None),
+    confirm_large: bool = Form(False),
+    user: Principal = Depends(require_editor),
+):
     services = request.app.state.services
     config, scanner, audit = services.config, services.scanner, services.audit
     inventory, errors = load_state(config)
     if inventory is None:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    network = declared_scope(subnet, inventory)
-    if network.prefixlen < config.max_subnet_prefix:
-        raise HTTPException(status_code=400, detail="Subnet too large")
-    if network.prefixlen < config.large_subnet_prefix and not confirm_large:
-        raise HTTPException(status_code=400, detail="Large subnet scan requires confirmation")
+    if scope is None:
+        scope, target = ("subnet", subnet) if subnet else ("all", "")
+    if scope == "all":
+        target = ""
     try:
-        job = scanner.start(str(network), inventory)
+        scan_request = ScanRequest(scope, target, mode)
+        plan = plan_targets(scan_request, inventory)
+        if plan.total > config.manual_scan_confirmation_threshold and not confirm_large:
+            return templates.TemplateResponse(request, "scan_confirm.html", {
+                "user": user, "scan_request": scan_request, "total": plan.total,
+                "threshold": config.manual_scan_confirmation_threshold,
+            }, status_code=200)
+        job = scanner.start_request(scan_request, inventory, confirmed=confirm_large)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    audit.record(user.subject, source_ip(request), "scan", f"Started scan {job.id} for {subnet}")
-    return RedirectResponse(f"/?subnet={subnet}", status_code=303)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(user.subject, source_ip(request), "scan", f"Started {mode} {scope} scan {job.id} for {plan.total} targets")
+    return RedirectResponse("/", status_code=303)
 
 
 @router.post("/scan/{job_id}/cancel")
@@ -299,6 +328,85 @@ async def cancel_scan(request: Request, job_id: str, user: Principal = Depends(r
     return RedirectResponse("/", status_code=303)
 
 
+@router.get("/schedules", response_class=HTMLResponse)
+async def schedules_page(request: Request, user: Principal = Depends(require_admin)):
+    manager = request.app.state.services.schedules
+    return templates.TemplateResponse(request, "schedules.html", {
+        "schedules": manager.list(), "user": user,
+    })
+
+
+def schedule_definition(form: Any) -> dict[str, Any]:
+    allowed = {
+        "csrf_token", "name", "scope", "target", "mode", "kind",
+        "interval_seconds", "time", "timezone", "weekdays",
+    }
+    unknown = set(form.keys()) - allowed
+    if unknown:
+        raise ValueError("Unsupported schedule fields: " + ", ".join(sorted(unknown)))
+    if any(key != "weekdays" and len(form.getlist(key)) != 1 for key in form.keys()):
+        raise ValueError("Repeated schedule field")
+    definition: dict[str, Any] = {
+        "name": str(form.get("name", "")).strip(),
+        "scope": str(form.get("scope", "all")),
+        "target": str(form.get("target", "")),
+        "mode": str(form.get("mode", "known-only")),
+        "kind": str(form.get("kind", "interval")),
+        "timezone": str(form.get("timezone", "UTC")),
+    }
+    if definition["kind"] == "interval":
+        definition["interval_seconds"] = float(str(form.get("interval_seconds", "")))
+    else:
+        definition["time"] = str(form.get("time", ""))
+    if definition["kind"] == "weekly":
+        definition["weekdays"] = [int(value) for value in form.getlist("weekdays")]
+    return definition
+
+
+@router.post("/schedules")
+async def schedule_create(request: Request, user: Principal = Depends(require_admin)):
+    services = request.app.state.services
+    form = await request.form()
+    try:
+        schedule = services.schedules.create(schedule_definition(form))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    services.audit.record(user.subject, source_ip(request), "schedule.create", f"Created disabled schedule {schedule['id']}")
+    return RedirectResponse("/schedules", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/update")
+async def schedule_update(request: Request, schedule_id: str, user: Principal = Depends(require_admin)):
+    services = request.app.state.services
+    form = await request.form()
+    try:
+        schedule = services.schedules.update(schedule_id, schedule_definition(form))
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if str(exc) == "Schedule not found" else 400, detail=str(exc)) from exc
+    services.audit.record(user.subject, source_ip(request), "schedule.update", f"Updated schedule {schedule_id}")
+    return RedirectResponse("/schedules", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/toggle")
+async def schedule_toggle(request: Request, schedule_id: str, enabled: bool = Form(...), user: Principal = Depends(require_admin)):
+    services = request.app.state.services
+    try:
+        schedule = services.schedules.toggle(schedule_id, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if str(exc) == "Schedule not found" else 400, detail=str(exc)) from exc
+    services.audit.record(user.subject, source_ip(request), "schedule.toggle", f"Schedule {schedule_id} enabled={enabled}")
+    return RedirectResponse("/schedules", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/delete")
+async def schedule_delete(request: Request, schedule_id: str, user: Principal = Depends(require_admin)):
+    services = request.app.state.services
+    try:
+        services.schedules.delete(schedule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    services.audit.record(user.subject, source_ip(request), "schedule.delete", f"Deleted schedule {schedule_id}")
+    return RedirectResponse("/schedules", status_code=303)
 def host_document(config: AppConfig) -> tuple[dict[str, Any], str]:
     # Read once: the form's revision must identify the exact document displayed.
     from .netinfra import _parse
@@ -499,6 +607,8 @@ async def options_save(request: Request, user: Principal = Depends(require_admin
     services.config = config
     services.audit = replacement_audit
     services.scanner.config = config
+    services.schedules.config = config
+    services.schedules.audit = replacement_audit
     services.security.config = config
     services.hostwrites.config = config
     return RedirectResponse("/options", status_code=303)

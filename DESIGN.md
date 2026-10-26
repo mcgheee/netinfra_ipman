@@ -254,9 +254,9 @@ network observations.
 
 ## Implementation gaps
 
-Phases 1–4 of the implementation plan are delivered. The table distinguishes
-remaining gaps from completed foundation, reconciliation, access, and reviewed
-host-write behavior; these are implementation differences, not undecided choices.
+Phases 1–5 of the implementation plan are delivered. The table distinguishes
+remaining phase-6 workflow and deployment gaps from completed foundation,
+reconciliation, access, reviewed host-write, and scan/schedule behavior.
 
 | Area | Current behavior | Required change |
 | --- | --- | --- |
@@ -265,17 +265,16 @@ host-write behavior; these are implementation differences, not undecided choices
 | Editing | `/hosts` provides bounded host listing/details and editor-only create/update/delete with common fields and full advanced YAML. Imports accept pasted/uploaded lists or `Hosts:` wrappers; name collisions reject the whole batch. | Host edits, deletion, and bulk creation delivered. |
 | Validation | The full proposal is checked for structure, known field values, duplicate names, MAC conflicts, and eligible out-of-subnet targets. Valid shared IPs and live discrepancies do not block saves. | Full preview/apply validation delivered. |
 | Saving | Actor-bound tokens bind exact proposed bytes and source revision; full-file diffs, serialized rechecks, external private backups, atomic replacement, separate Git result, guarded retry, no push. External writers remain outside app-lock coordination. | Reviewed atomic writes and local-only Git delivered; configure backup storage and coordinate external writers. |
-| Scanning | Central durable runner for full/known checks with snapshot revisions, bounded probes, and restart recovery; web full-scan `/16` cutoff remains. | Remaining scope/mode controls, rate limits, confirmation policy, and scheduling. |
-| Scheduling | Durable disabled-by-default definitions; no dispatch/UI. | Interval/calendar schedules and overlap handling. |
-| Results | Raw observations reconcile per address; undocumented responders are visible with timestamps. | Compact discovery coverage, DHCP context, and reviewed discovery-to-host workflow. |
-| Status | Exact DNS sets and MAC comparison; unavailable evidence is incomplete; relevant edits mark evidence stale. | Age/schedule-based freshness and administrator override. |
-| Storage | SQLite schema 3 retains observations, schedules, bounded jobs, hashed sessions, and expiring OIDC transactions. | Coverage and scheduling integration in later phases. |
-| UI scale | Address and outlier views render bounded pages with direct IPv4 arithmetic. | Search/filtering and progressive scan updates. |
-| Authentication | Verified expiring/revocable opaque sessions, CSRF, server-side roles, and CLI-only emergency provisioning/recovery. | Access foundation delivered; future routes must enforce the same policies. |
+| Scanning | Explicit all/subnet/range/IP scopes and full/known-only/discovery-only modes; declared-network validation, overlap deduplication, streamed IPv4 iteration, `/31`/`/32`, 128 concurrent checks, configurable 100/s admission, direct large-scan confirmation, cancellation, sparse observations and compact completed coverage. | Phase 6 adds search/filtering, progressive updates, DHCP context, and reviewed discovery-to-host workflow. |
+| Scheduling | Disabled-by-default interval/daily/weekly schedules, explicit IANA timezone, DST gap/fold handling, current-file dispatch validation, coalesced triggers, admin UI, and restart without catch-up floods. | Freshness display policy and phase-6 workflow remain. |
+| Results | Raw observations reconcile per address; undocumented responders are visible with timestamps; latest completed discovery coverage is compact and replaces overlap. | DHCP context, discovery review, and age/schedule-based freshness remain phase 6. |
+| Storage | SQLite schema 4 retains observations, coverage, schedules, bounded jobs, hashed sessions, and expiring OIDC transactions. | Retention defaults remain configurable. |
+| UI scale | Address and outlier views render bounded pages with direct IPv4 arithmetic. Scan scope/mode, confirmation, progress summaries, cancellation, and administrator schedule controls are available. | Search/filtering, HTMX progress refresh, discrepancy filters, and complete web acceptance remain phase 6. |
+| Authentication | Verified expiring/revocable opaque sessions, CSRF, server-side roles, and CLI-only emergency provisioning/recovery. Scan actions are editor-only; schedules are administrator-only. | Phase-6 routes and workflows must enforce the same policies. |
 | SSO | OIDC discovery, code/PKCE flow, signed RS256 ID-token validation, and explicit claim-to-role mapping. | Supply real provider/redirect/mapping configuration at deployment. |
-| Access/settings/audit | Anonymous view defaults off; optional viewing is read-only; admin-only redacted settings/audit, explicit proxy trust, private settings writes, and bounded audit rotation. | Schedule administration uses these policies when delivered in phase 5. |
+| Access/settings/audit | Anonymous view defaults off; optional viewing is read-only; admin-only redacted settings/audit, explicit proxy trust, private settings writes, bounded audit rotation, and administrator-only schedule management. | Real provider/proxy/path settings are deployment-specific. |
 | Lifecycle | Explicit factory/lifespan initialization and awaited scan/storage/audit cleanup. | Foundation delivered; one worker required. |
-| Tests | 501 tests pass, covering phase-4 host transactions, Git, routes, authorization and earlier identity/inventory/runtime behavior. | Remaining scan/schedule and complete UI acceptance coverage. |
+| Tests | Phase 5 adds deterministic coverage for streamed targets, rate/concurrency bounds, confirmation, sparse coverage, schedule persistence, coalescing, and DST. | Phase-6 UI/deployment acceptance remains. |
 
 ## Deployment configuration still required
 
@@ -293,8 +292,9 @@ known-IP/discovery schedules; and actionable discrepancy displays. It must
 preserve unrelated NetInfra content, enforce all roles in both anonymous-view
 modes, and remain responsive with large target ranges using bounded resources.
 
-Tests use temporary files and simulated probes. The phase-4 suite passes 501 tests,
-including reviewed host writes, import collisions, validation, atomic backups,
-local-only Git, and the earlier identity/inventory/runtime behavior. Phases 5–6
-remain required for complete v1 acceptance; phase 4 does not claim production
-readiness.
+Tests use temporary files and simulated probes. The 561-test suite covers phase-5
+streaming, rate/concurrency bounds, confirmation, coverage, scheduling, DST, and
+authorization alongside the earlier phases. Phase 5 scan/schedule behavior is
+implemented; phase 6 web freshness, search/filtering, progressive updates, DHCP
+context, discovery review, and deployment acceptance remain. This is not a claim
+of production readiness.

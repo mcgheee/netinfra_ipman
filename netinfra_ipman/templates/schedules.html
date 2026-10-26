@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Scan schedules</h2>
+<p>New schedules are disabled. Enabling authorizes recurring scans; targets are revalidated against the current NetInfra file when each run starts.</p>
+{% for schedule in schedules %}
+<section class="job">
+  <strong>{{ schedule.name or schedule.id }}</strong>
+  <span>{{ schedule.kind }} · {{ schedule.mode }} · {{ schedule.scope }}{% if schedule.target %}: {{ schedule.target }}{% endif %}</span>
+  <span>{{ schedule.status }}{% if schedule.next_trigger %} · next {{ schedule.next_trigger }}{% endif %}</span>
+  {% if schedule.last_error %}<p class="banner error">{{ schedule.last_error }}</p>{% endif %}
+  {% if schedule.last_job_id %}<p>Last job: {{ schedule.last_job_id }}</p>{% endif %}
+  <form method="post" action="/schedules/{{ schedule.id }}/toggle">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="enabled" value="{{ 'false' if schedule.enabled else 'true' }}">
+    <button>{{ 'Disable' if schedule.enabled else 'Enable' }}</button>
+  </form>
+  <form method="post" action="/schedules/{{ schedule.id }}/delete">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button>Delete</button>
+  </form>
+</section>
+{% else %}<p>No schedules configured.</p>{% endfor %}
+{% if schedules %}
+<details>
+  <summary>Edit an existing schedule</summary>
+  {% for schedule in schedules %}
+  <form method="post" action="/schedules/{{ schedule.id }}/update" class="options-grid">
+    <h3>{{ schedule.name or schedule.id }}</h3>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Name <input name="name" value="{{ schedule.name or '' }}"></label>
+    <label>Scope
+      <select name="scope">
+        <option value="all" {% if schedule.scope == 'all' %}selected{% endif %}>All declared subnets</option>
+        <option value="subnet" {% if schedule.scope == 'subnet' %}selected{% endif %}>One subnet</option>
+        <option value="range" {% if schedule.scope == 'range' %}selected{% endif %}>Inclusive range</option>
+        <option value="ip" {% if schedule.scope == 'ip' %}selected{% endif %}>One IP</option>
+      </select>
+    </label>
+    <label>Target <input name="target" value="{{ schedule.target or '' }}"></label>
+    <label>Mode
+      <select name="mode">
+        <option value="known-only" {% if schedule.mode == 'known-only' %}selected{% endif %}>Known IP checks</option>
+        <option value="discovery-only" {% if schedule.mode == 'discovery-only' %}selected{% endif %}>Discovery</option>
+        <option value="full" {% if schedule.mode == 'full' %}selected{% endif %}>Full</option>
+      </select>
+    </label>
+    <label>Schedule type
+      <select name="kind">
+        <option value="interval" {% if schedule.kind == 'interval' %}selected{% endif %}>Interval</option>
+        <option value="daily" {% if schedule.kind == 'daily' %}selected{% endif %}>Daily</option>
+        <option value="weekly" {% if schedule.kind == 'weekly' %}selected{% endif %}>Weekly</option>
+      </select>
+    </label>
+    <label>Interval seconds <input name="interval_seconds" type="number" min="0.001" step="any" value="{{ schedule.interval_seconds or 3600 }}"></label>
+    <label>Local time <input name="time" type="time" value="{{ schedule.time or '02:30' }}"></label>
+    <label>IANA timezone <input name="timezone" value="{{ schedule.timezone or 'UTC' }}"></label>
+    <fieldset><legend>Weekly days</legend>
+      {% for day, label in [(0, 'Monday'), (1, 'Tuesday'), (2, 'Wednesday'), (3, 'Thursday'), (4, 'Friday'), (5, 'Saturday'), (6, 'Sunday')] %}
+      <label><input type="checkbox" name="weekdays" value="{{ day }}" {% if schedule.weekdays and day in schedule.weekdays %}checked{% endif %}>{{ label }}</label>
+      {% endfor %}
+    </fieldset>
+    <button>Save schedule</button>
+  </form>
+  {% endfor %}
+</details>
+{% endif %}
+<h3>Create schedule</h3>
+<form method="post" action="/schedules" class="options-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <label>Name <input name="name"></label>
+  <label>Scope
+    <select name="scope"><option value="all">All declared subnets</option><option value="subnet">One subnet</option><option value="range">Inclusive range</option><option value="ip">One IP</option></select>
+  </label>
+  <label>Target <input name="target" placeholder="CIDR, IP, or start-IP - end-IP"></label>
+  <label>Mode
+    <select name="mode"><option value="known-only">Known IP checks</option><option value="discovery-only">Discovery</option><option value="full">Full</option></select>
+  </label>
+  <label>Schedule type
+    <select name="kind"><option value="interval">Interval</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
+  </label>
+  <label>Interval seconds <input name="interval_seconds" type="number" min="0.001" step="any" value="3600"></label>
+  <label>Local time (daily/weekly) <input name="time" type="time" value="02:30"></label>
+  <label>IANA timezone <input name="timezone" value="UTC"></label>
+  <fieldset><legend>Weekly days</legend>
+    {% for day, label in [(0, 'Monday'), (1, 'Tuesday'), (2, 'Wednesday'), (3, 'Thursday'), (4, 'Friday'), (5, 'Saturday'), (6, 'Sunday')] %}
+    <label><input type="checkbox" name="weekdays" value="{{ day }}">{{ label }}</label>
+    {% endfor %}
+  </fieldset>
+  <button>Create disabled schedule</button>
+</form>
+{% endblock %}

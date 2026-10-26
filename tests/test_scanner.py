@@ -133,7 +133,7 @@ def test_shutdown_and_cancel_await_bounded_probe_cleanup(tmp_path, monkeypatch, 
 
     async def scenario():
         manager = ScanManager(AppConfig(scan_concurrency=1), store)
-        job = manager.start("0.0.0.0/0", inventory_for("0.0.0.0/0"))
+        job = manager.start("0.0.0.0/0", inventory_for("0.0.0.0/0"), confirmed=True)
         try:
             assert await asyncio.to_thread(entered.wait, 2)
             if explicit_cancel:

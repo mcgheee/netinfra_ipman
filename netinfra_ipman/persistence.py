@@ -16,7 +16,7 @@ class RuntimeStore:
     after all consumers (including the scan runner) have stopped.
     """
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(self, sqlite_path: str | Path):
         self.sqlite_path = str(sqlite_path)
@@ -61,6 +61,10 @@ class RuntimeStore:
                             "payload TEXT NOT NULL, expires_at REAL NOT NULL)"
                         )
                         connection.execute(f"CREATE INDEX {table}_expiry ON {table}(expires_at)")
+                if version < 4:
+                    connection.execute(
+                        "CREATE TABLE discovery_coverage (job_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                    )
                 connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 interrupted = connection.execute(
                     "SELECT id, payload FROM jobs WHERE status IN ('queued', 'running')"
@@ -127,6 +131,53 @@ class RuntimeStore:
                 (key, json.dumps(value), value.get("source_revision")),
             )
 
+    def delete(self, key: str) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM observations WHERE key = ?", (key,))
+
+    def save_discovery_coverage(self, payload: dict[str, Any]) -> None:
+        """Keep latest completed coverage, splitting older overlapping intervals.
+
+        Storage grows with distinct coverage boundaries, not silent addresses.
+        """
+        intervals = [tuple(pair) for pair in payload["intervals"]]
+        with self._db:
+            for old in self.list_discovery_coverage():
+                remaining = [tuple(pair) for pair in old["intervals"]]
+                for start, end in intervals:
+                    trimmed = []
+                    for left, right in remaining:
+                        if right < start or left > end:
+                            trimmed.append((left, right))
+                        else:
+                            if left < start:
+                                trimmed.append((left, start - 1))
+                            if right > end:
+                                trimmed.append((end + 1, right))
+                    remaining = trimmed
+                if not remaining:
+                    self._db.execute("DELETE FROM discovery_coverage WHERE job_id = ?", (old["job_id"],))
+                elif remaining != [tuple(pair) for pair in old["intervals"]]:
+                    old["intervals"] = remaining
+                    self._db.execute(
+                        "UPDATE discovery_coverage SET payload = ? WHERE job_id = ?",
+                        (json.dumps(old), old["job_id"]),
+                    )
+            if intervals:
+                self._db.execute(
+                    "INSERT INTO discovery_coverage VALUES (?, ?) "
+                    "ON CONFLICT(job_id) DO UPDATE SET payload = excluded.payload",
+                    (payload["job_id"], json.dumps(payload)),
+                )
+
+    def list_discovery_coverage(self) -> list[dict[str, Any]]:
+        rows = self._db.execute("SELECT payload FROM discovery_coverage ORDER BY rowid").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        row = self._db.execute("SELECT payload FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return json.loads(row[0]) if row is not None else None
+
     def save_job(self, job: dict[str, Any]) -> None:
         with self._db:
             self._db.execute(
@@ -163,6 +214,14 @@ class RuntimeStore:
     def list_schedules(self) -> list[dict[str, Any]]:
         rows = self._db.execute("SELECT payload FROM schedules ORDER BY id").fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        row = self._db.execute("SELECT payload FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        return json.loads(row[0]) if row is not None else None
+
+    def delete_schedule(self, schedule_id: str) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
 
     def save_session(self, token_hash: str, payload: dict[str, Any], expires_at: float) -> None:
         with self._db:

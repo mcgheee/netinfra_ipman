@@ -14,7 +14,7 @@
     <a href="/">Subnets</a>
     <a href="/hosts">Hosts</a>
     <a href="/outliers">Validation / outliers</a>
-    {% if user and user.is_admin %}<a href="/options">Options</a><a href="/audit">Audit</a>{% endif %}
+    {% if user and user.is_admin %}<a href="/schedules">Schedules</a><a href="/options">Options</a><a href="/audit">Audit</a>{% endif %}
     {% if user %}
       <span>Signed in as {{ user.username }} ({{ user.role.value }})</span>
       {% if user.auth_method == 'local' %}<a href="/change-password">Change password</a>{% endif %}

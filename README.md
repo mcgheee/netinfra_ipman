@@ -7,20 +7,37 @@ and comparing intended configuration with network observations. The
 
 ## Implementation status
 
-Phases 1–4 (foundation, reconciliation, secure access, and reviewed host writes) are implemented:
+Phases 1–5 (foundation, reconciliation, secure access, reviewed host writes, and
+scan/schedule runtime) are implemented. Phase 6 remains required for v1.
 
 - `create_app()` constructs independent applications without creating configuration,
   credentials, logs, or database files at import time.
 - FastAPI lifespan explicitly validates settings, initializes/version-checks SQLite,
-  starts one scan manager, and closes probes, storage, and audit handlers on shutdown.
-- SQLite on persistent local storage retains latest observations, job summaries,
-  and schedule definitions. Redis and process-memory fallback are removed. Database
-  initialization errors fail startup; newer schema versions are rejected.
+  starts one scan manager and its schedule dispatcher, and closes probes, storage,
+  schedules, and audit handlers on shutdown.
+- SQLite on persistent local storage retains latest observations, compact discovery
+  coverage, job summaries, and schedule definitions. Redis and process-memory fallback
+  are removed. Database initialization errors fail startup; newer schema versions
+  are rejected.
 - Queued/running jobs found after restart become `interrupted` and incomplete.
   Graceful shutdown cancels active work and awaits outstanding probes.
 - One scan job runs at a time. Targets are streamed through bounded workers;
   raw ping/DNS/MAC observations are stored separately from job summaries. Silent undocumented
   addresses do not create observation rows. Completed job retention defaults to 100.
+
+- Scan requests support all declared subnets, one subnet, an inclusive IP range,
+  or one IP with full, known-only, or discovery-only modes. The planner validates
+  declared coverage, deduplicates overlap, streams large IPv4 ranges, and supports
+  every prefix including `/31` and `/32`; there is no fixed `/16` cutoff.
+- The runner defaults to 128 concurrent checks and 100 address-check starts per
+  second. Manual scans above 4,096 targets require explicit confirmation enforced
+  by the manager as well as the UI. Cancellation waits for synchronous probes;
+  completed discovery coverage is stored compactly in SQLite schema 4.
+- Administrators create, edit, enable/disable, and delete interval, daily, and
+  weekly schedules from `/schedules`; new schedules start disabled. Schedules
+  use explicit IANA timezones, skip nonexistent DST times, run repeated local
+  times once, coalesce while busy, and resolve targets against current NetInfra
+  at dispatch. Downtime does not trigger catch-up.
 - Administrators are provisioned only through the CLI, never during web startup.
 - Inventory includes IPv4 A/default-A and `no_dns` records with optional MACs.
   Shared addresses retain all definitions and prefer MAC-bearing records. Agreeing
@@ -40,10 +57,10 @@ Phases 1–4 (foundation, reconciliation, secure access, and reviewed host write
   fingerprint. Relevant edits mark affected evidence stale, including another
   address changing the same DNS answer set. Unrelated comments/custom-field edits
   do not invalidate otherwise current evidence.
-- Refresh and full subnet checks share the single durable runner. Concurrent
-  probe requests are rejected as busy rather than starting independent workers.
-  Address/outlier pages are bounded to 256 rows; large subnet pagination uses
-  direct address arithmetic, not enumeration of earlier pages.
+- Known refreshes and every manual scan scope use the same durable single runner.
+  Concurrent scan requests are rejected as busy rather than starting independent
+  workers. Address/outlier pages are bounded to 256 rows; large subnet pagination
+  uses direct address arithmetic, not enumeration of earlier pages.
 
 Host changes now use a shared reviewed transaction service:
 
@@ -71,11 +88,10 @@ Host changes now use a shared reviewed transaction service:
   pushes, reports commit failure separately from a successful file save, and
   provides a guarded retry. Remove retired `git_push` and `git_remote` settings.
 
-**This is not production-ready v1.** Phases 5–6 remain: complete scan scope/modes,
-rate bounds and confirmation, schedule execution/DST behavior, discovery coverage,
-age-based freshness, search/filtering/progressive updates, DHCP context, and full
-deployment/UI acceptance. Validate host writes first against a disposable
-NetInfra copy. The existing full-scan route still has a `/16` restriction.
+**This is not production-ready v1.** Phase 5 scan/schedule behavior is implemented.
+Phase 6 remains: age-based freshness, search/filtering, progressive HTMX updates,
+DHCP-pool context, discovery-to-host review, and deployment/UI acceptance. Validate
+host writes first against a disposable NetInfra copy.
 
 ## Development quick start
 
@@ -105,12 +121,16 @@ is `./ipman-config.yml`. Missing files use validated defaults without writing a
 configuration file. Unknown settings and invalid types/values are rejected.
 Paths are relative to the process working directory unless absolute.
 
-Replace the retired `redis_url` setting with `sqlite_path` (default
-`./ipman.sqlite3`). Redis state is not migrated. Select a persistent **local disk**
-path, separate from NetInfra, settings, credentials, and audit logs. SQLite is
-required: there is no memory fallback. Parent directories are created at explicit
-startup. `completed_job_retention` defaults to 100; zero keeps no terminal jobs.
-Latest observations and schedule definitions are retained across restarts.
+Replace retired `redis_url` with `sqlite_path` (default `./ipman.sqlite3`).
+Redis state is not migrated. Select persistent **local disk** storage separate
+from NetInfra, settings, credentials, and audit logs. SQLite is required; there is
+no memory fallback. Parent directories are created at explicit startup.
+`completed_job_retention` defaults to 100; zero keeps no terminal jobs. Latest
+observations, compact discovery coverage, and schedule definitions persist across
+restarts. Remove retired `large_subnet_prefix` and `max_subnet_prefix`; all IPv4
+CIDR sizes are supported. Use `manual_scan_confirmation_threshold` (default
+4,096) and `scan_start_rate` (default 100) to control workload rather than
+restricting subnet sizes.
 
 Host backups default to `./ipman-backups`, outside the detected source Git
 checkout, with `backup_retention: 20`. Set `backup_dir` to protected persistent
@@ -124,10 +144,12 @@ separately and can be retried after resolving the Git failure. The app never
 switches branches. Retired `git_push` and `git_remote` settings are rejected
 and must be removed during configuration migration.
 
-SQLite schema 3 adds durable hashed sessions and expiring, one-use OIDC
-transactions. The schema-2 migration of phase-1 observations is retained: old
-verdicts become raw evidence without intended values. Historical observations
-without a semantic fingerprint remain stale until checked again.
+SQLite schema 4 adds compact discovery coverage to durable observations, jobs,
+schedules, hashed sessions, and expiring one-use OIDC transactions. Earlier
+observation migrations remain supported: migrated verdicts become raw evidence
+without intended values. Historical observations without a semantic fingerprint
+remain stale until checked again. Interrupted jobs remain incomplete after restart;
+schedules resume without catch-up floods.
 
 Scanner resolvers are separate from NetInfra DHCP options. `dns_servers` is the
 global list; `subnet_dns_servers` maps canonical IPv4 CIDRs to resolver lists.
@@ -136,12 +158,15 @@ to the global list. With neither configured, use the server resolver. DNS querie
 are absolute and do not use resolver search suffixes. The Options page accepts
 resolver overrides as a JSON object; the configuration file uses YAML mappings.
 
-Administrator-only `/options` and `/audit` pages enforce permissions server-side.
-Secrets are omitted from settings HTML and rejected on settings POSTs. Sensitive
-OIDC/session/proxy/path fields are restart-only; edit the protected configuration
-file rather than trying to switch them live. Redacted values in other fields
-are also read-only, so masks cannot accidentally overwrite real configuration.
-Accepted settings are validated and atomically saved with mode `0600`.
+Administrator-only `/options`, `/audit`, and `/schedules` pages enforce permissions
+server-side. Editors can launch and cancel manual scans. Secrets are omitted from
+settings HTML and rejected on settings POSTs. Sensitive OIDC/session/proxy/path
+fields are restart-only; edit the protected configuration file rather than trying
+to switch them live. Redacted values in other fields are also read-only, so masks
+cannot accidentally overwrite real configuration. Accepted settings are validated
+and atomically saved with mode `0600`. `scan_concurrency` (128), `scan_start_rate`
+(100 starts/second), and `manual_scan_confirmation_threshold` (4,096 targets)
+are configurable.
 
 Run exactly one application worker against a runtime database. Multi-worker or
 multi-server coordination is unsupported. SQLite contains runtime state only;
@@ -252,18 +277,15 @@ External syslog retention is the operator's responsibility.
 .venv/bin/python -m pytest -q
 ```
 
-Tests use temporary files/databases and simulated probes/provider responses.
-The full suite passes **501 tests**, including transactional host edits/import,
-stale/tampered previews, semantic conflicts, atomic writes and backups, Git
-branch/dirty/retry behavior, session forgery/expiry/revocation, CSRF, every role
-and both anonymous-view settings, OIDC signature/claim failures, recovery,
-private configuration writes, proxy trust, audit redaction/rotation, and earlier
-inventory/lifecycle coverage.
+Tests use temporary files/databases and simulated probes/provider responses. The
+full suite passes **561 tests** with one Starlette/httpx TestClient deprecation
+warning. Coverage includes target boundaries and large streamed ranges, rate and
+concurrency limits, confirmation, cancellation/partial evidence, compact coverage,
+interval/calendar scheduling and DST, role/CSRF enforcement, plus earlier host,
+security, identity, inventory, lifecycle, and persistence behavior.
 
-An isolated Uvicorn/browser smoke completed signed OIDC exchanges against a
-temporary local provider simulator for viewer/editor/administrator identities,
-verified role restrictions, protected settings/audit, anonymous read-only access,
-CLI recovery, forced password change, and session revocation. A separate running
-Uvicorn/browser smoke rendered the paginated host list against isolated temporary
-configuration and data. Host mutation workflows used temporary-file tests; no
-external identity provider or live network probe was used. Phases 5–6 remain.
+An isolated authenticated Uvicorn/browser smoke rendered the scan controls and
+administrator schedule page, created a disabled schedule, and reached the
+large-scan confirmation page without starting probes. No live network scan was
+used. Earlier phase-3 OIDC browser checks used a temporary local provider; no
+external identity provider was contacted.

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Administrator audit</h2>
+<p>Up to 100 recent entries from the active audit file. Rotation is independent of network observation retention.</p>
+{% if not file_logging %}<p>File audit logging is disabled. Review configured syslog output where enabled.</p>{% endif %}
+{% for event in events %}
+<article><h3>{{ event.timestamp }} — {{ event.action }}</h3><pre class="diff">{{ event|tojson(indent=2) }}</pre></article>
+{% else %}<p>No recent file audit entries.</p>{% endfor %}
+{% endblock %}

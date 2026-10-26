@@ -1,7 +1,7 @@
 # NetInfra IPAM v1 implementation plan
 
-This plan implements [the approved design](DESIGN.md). Phases 1–2 are implemented;
-phases 3–6 remain pending. Design policies and initial operational defaults are
+This plan implements [the approved design](DESIGN.md). Phases 1–3 are implemented;
+phases 4–6 remain pending. Design policies and initial operational defaults are
 approved; environment-specific values are supplied at deployment time.
 
 ## 1. Application and persistence foundation
@@ -87,6 +87,34 @@ scan/schedule controls, and full web acceptance remain phases 3–6.
 Acceptance: test both anonymous-view settings and every role, including forged
 or expired sessions, direct requests to protected routes, CSRF, OIDC failure,
 and emergency-admin recovery. Public pages never expose credentials.
+
+Delivered: durable opaque sessions with absolute expiry, revocation, and
+browser-bound CSRF; viewer/editor/administrator dependencies on every existing
+route; anonymous viewing disabled by default and strictly read-only when enabled.
+Generic OIDC uses discovery, authorization code with PKCE S256, one-use
+browser-bound state, nonce, RS256/JWKS and identity/time/audience validation.
+Explicit group/role mappings fail closed for unmapped users. Emergency local
+provisioning/recovery remains CLI-only, forces password change, rotates credential
+versions, and revokes older local sessions.
+
+Settings and audit pages are administrator-only. Secrets are omitted/redacted,
+protected settings require file edits/restart, and settings save atomically with
+private permissions. SQLite schema 3 adds expiring security state. Trusted proxy
+chains are validated against explicit peer networks; deployment commands disable
+Uvicorn proxy rewriting and access logs. Audit files rotate independently with
+private permissions and bounded retention; authentication, permission failures,
+mutations, probes, and settings outcomes are audited without credential bodies.
+
+Verified: 396 tests pass, including roles, both anonymous modes, direct-route
+authorization, CSRF, forged/expired/revoked sessions, OIDC signature/claim/provider
+failures, recovery, proxy spoofing, redaction/rotation, and private settings writes.
+A running browser smoke completed signed OIDC flows against a temporary local
+provider for all three roles, exercised editor checks and protected admin pages,
+enabled read-only anonymous access, and verified CLI recovery, mandatory password
+change, and revocation. Probes were simulated; no external IdP or live network
+scan was used. Host-write safety and remaining scan/schedule/UI work remain
+phases 4–6; full production readiness is not claimed.
+
 
 ## 4. Host editing, import, and safe file writes
 
@@ -182,12 +210,12 @@ The interface remains responsive during large streamed scans.
 ## Verification and rollout
 
 The test dependencies are now installed in the development virtual environment,
-and the phase-2 suite passes. The original inspection had no pytest baseline.
+and the phase-3 suite passes. The original inspection had no pytest baseline.
 Add focused tests with each subsystem and use mocked network probes by default.
 Use an isolated sample NetInfra file and controlled test networks for integration checks.
 
-Deliver in the order above. Do not deploy the starter's existing authentication
-or direct-write paths as the finished application. Validate against a copy of a
+Deliver in the order above. Do not deploy the remaining direct-write paths as
+the finished application or restore legacy unsigned-cookie authentication. Validate against a copy of a
 representative NetInfra file before connecting the production file and enabling
 schedules. Configure OIDC, DNS views, persistent storage, and scan rates for the
 actual deployment; keep credentials out of source control.

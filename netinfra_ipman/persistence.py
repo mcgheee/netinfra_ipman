@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import json
 import sqlite3
 from pathlib import Path
@@ -15,7 +16,7 @@ class RuntimeStore:
     after all consumers (including the scan runner) have stopped.
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, sqlite_path: str | Path):
         self.sqlite_path = str(sqlite_path)
@@ -32,6 +33,9 @@ class RuntimeStore:
             return
         if self.sqlite_path != ":memory:":
             Path(self.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(self.sqlite_path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.close(descriptor)
+            os.chmod(self.sqlite_path, 0o600)
         connection = sqlite3.connect(self.sqlite_path)
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -50,6 +54,13 @@ class RuntimeStore:
                     connection.execute("CREATE TABLE schedules (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 if version < 2:
                     self._migrate_observations(connection)
+                if version < 3:
+                    for table in ("sessions", "oidc_transactions"):
+                        connection.execute(
+                            f"CREATE TABLE {table} (token_hash TEXT PRIMARY KEY, "
+                            "payload TEXT NOT NULL, expires_at REAL NOT NULL)"
+                        )
+                        connection.execute(f"CREATE INDEX {table}_expiry ON {table}(expires_at)")
                 connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
                 interrupted = connection.execute(
                     "SELECT id, payload FROM jobs WHERE status IN ('queued', 'running')"
@@ -152,3 +163,58 @@ class RuntimeStore:
     def list_schedules(self) -> list[dict[str, Any]]:
         rows = self._db.execute("SELECT payload FROM schedules ORDER BY id").fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def save_session(self, token_hash: str, payload: dict[str, Any], expires_at: float) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET "
+                "payload = excluded.payload, expires_at = excluded.expires_at",
+                (token_hash, json.dumps(payload), expires_at),
+            )
+
+    def get_session(self, token_hash: str, now: float) -> dict[str, Any] | None:
+        with self._db:
+            row = self._db.execute(
+                "SELECT payload, expires_at FROM sessions WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+            if row is None:
+                return None
+            if row[1] <= now:
+                self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+                return None
+            try:
+                payload = json.loads(row[0])
+            except (ValueError, TypeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+    def save_oidc_transaction(self, state_hash: str, payload: dict[str, Any], expires_at: float) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT INTO oidc_transactions VALUES (?, ?, ?) "
+                "ON CONFLICT(token_hash) DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at",
+                (state_hash, json.dumps(payload), expires_at),
+            )
+
+    def consume_oidc_transaction(self, state_hash: str, now: float) -> dict[str, Any] | None:
+        with self._db:
+            row = self._db.execute(
+                "DELETE FROM oidc_transactions WHERE token_hash = ? RETURNING payload, expires_at",
+                (state_hash,),
+            ).fetchone()
+            if row is None or row[1] <= now:
+                return None
+            try:
+                payload = json.loads(row[0])
+            except (ValueError, TypeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
+    def purge_expired_security_state(self, now: float) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+            self._db.execute("DELETE FROM oidc_transactions WHERE expires_at <= ?", (now,))

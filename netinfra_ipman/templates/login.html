@@ -2,9 +2,17 @@
 {% block content %}
 <h2>Login</h2>
 {% if error %}<div class="banner error">{{ error }}</div>{% endif %}
+{% if oidc_enabled %}
+<form method="post" action="/oidc/login">
+  <input type="hidden" name="csrf_token" value="{{ login_csrf }}">
+  <button>Sign in with SSO</button>
+</form>
+{% endif %}
+<h3>Emergency local administrator</h3>
 <form method="post" action="/login" class="stack">
-  <label>Username <input name="username" required></label>
-  <label>Password <input name="password" type="password" required></label>
+  <input type="hidden" name="csrf_token" value="{{ login_csrf }}">
+  <label>Username <input name="username" autocomplete="username" required></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
   <button>Login</button>
 </form>
 {% endblock %}

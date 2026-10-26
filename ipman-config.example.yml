@@ -4,6 +4,8 @@ admin_file: ./ipman-admin.yml
 audit_log_file: ./ipman-audit.log
 audit_to_file: true
 audit_to_syslog: false
+audit_max_bytes: 10485760
+audit_backup_count: 5
 sqlite_path: ./ipman.sqlite3
 completed_job_retention: 100
 scan_concurrency: 128
@@ -24,14 +26,20 @@ git_remote: origin
 session_timeout_minutes: 60
 lockout_attempts: 5
 lockout_minutes: 15
-rate_limit_per_minute: 60
-keycloak_enabled: false
-keycloak_metadata_url: ""
-keycloak_client_id: ""
-keycloak_client_secret: ""
-duo_enabled: false
-duo_integration_key: ""
-duo_secret_key: ""
-duo_api_hostname: ""
-tls_enabled: false
-reverse_proxy: true
+# Anonymous browsing is opt-in. Serve HTTPS before enabling browser sessions.
+allow_anonymous_viewing: false
+session_cookie_secure: true
+# Trust only the immediate proxy addresses/CIDRs you operate; never a public catch-all.
+trusted_proxies: []
+# Generic OIDC authorization-code login with PKCE; configure real provider values.
+oidc_enabled: false
+oidc_issuer: ""
+oidc_client_id: ""
+# Empty is valid for public PKCE clients. Protect this file if a secret is configured.
+oidc_client_secret: ""
+oidc_redirect_uri: ""
+oidc_groups_claim: groups
+oidc_roles_claim: roles
+# Claim values map to viewer, editor, or administrator. Unmapped users are denied.
+oidc_group_role_map: {}
+oidc_claim_role_map: {}

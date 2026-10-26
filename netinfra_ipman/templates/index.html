@@ -15,17 +15,19 @@
 </section>
 {% if selected %}
 <section class="actions">
-  {% if user %}
+  {% if user and user.can_edit %}
   <form method="post" action="/refresh">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="subnet" value="{{ selected }}">
     <button>Refresh status</button>
   </form>
   <form method="post" action="/scan">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="subnet" value="{{ selected }}">
     <label><input type="checkbox" name="confirm_large" value="true"> Confirm large subnet</label>
     <button>Scan subnet</button>
   </form>
-  {% else %}<p>Log in to run network checks.</p>
+  {% else %}<p>{% if user %}Editor permission is required to run network checks.{% else %}Log in to run network checks.{% endif %}</p>
   {% endif %}
 </section>
 {% include "inventory_table.html" %}
@@ -38,7 +40,7 @@
 <section>
   <h2>Scan jobs</h2>
   {% for job in jobs %}
-    <div class="job"><strong>{{ job.cidr }}</strong> {% if job.mode %}{{ job.mode }}{% endif %} {{ job.status }} {{ job.progress }}/{{ job.total }}{% if job.error %}<span>{{ job.error }}</span>{% endif %}{% if user and job.status in ['queued', 'running'] %}<form method="post" action="/scan/{{ job.id }}/cancel"><button>Cancel</button></form>{% endif %}</div>
+    <div class="job"><strong>{{ job.cidr }}</strong> {% if job.mode %}{{ job.mode }}{% endif %} {{ job.status }} {{ job.progress }}/{{ job.total }}{% if job.error %}<span>{{ job.error }}</span>{% endif %}{% if user and user.can_edit and job.status in ['queued', 'running'] %}<form method="post" action="/scan/{{ job.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button>Cancel</button></form>{% endif %}</div>
   {% else %}<p>No scan jobs yet.</p>{% endfor %}
 </section>
 {% endblock %}

@@ -2,7 +2,7 @@ from dataclasses import asdict
 
 import pytest
 
-from netinfra_ipman.config import AppConfig, load_config, save_config
+from netinfra_ipman.config import AppConfig, load_config, public_settings, save_config
 
 
 def test_missing_config_returns_defaults_without_creating_files(tmp_path, monkeypatch):
@@ -118,7 +118,9 @@ def test_valid_settings_round_trip(tmp_path):
         subnet_dns_servers={"10.0.0.0/24": ["192.0.2.54"]},
         ping_timeout=1,
         completed_job_retention=0,
-        keycloak_client_id="retained-compatible-setting",
+        oidc_client_id="real-client-id",
+        oidc_roles_claim="realm_access.roles",
+        oidc_claim_role_map={"inventory-users": "viewer"},
     )
     save_config(config)
     assert asdict(load_config(path)) == asdict(config)
@@ -148,3 +150,162 @@ def test_save_rejects_sqlite_destination_before_overwriting(tmp_path):
 def test_load_rejects_empty_or_invalid_path(path):
     with pytest.raises(ValueError, match="config_path"):
         load_config(path)
+
+
+@pytest.mark.parametrize("name", [
+    "keycloak_enabled", "keycloak_client_secret", "duo_enabled", "duo_secret_key",
+    "tls_enabled", "reverse_proxy",
+])
+def test_retired_settings_require_explicit_migration(tmp_path, name):
+    path = tmp_path / "settings.yml"
+    path.write_text(f"{name}: secret-value-not-for-errors\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="migrate to oidc_") as error:
+        load_config(path)
+    assert "secret-value-not-for-errors" not in str(error.value)
+
+
+@pytest.mark.parametrize("settings,field", [
+    ({"allow_anonymous_viewing": 1}, "allow_anonymous_viewing"),
+    ({"session_cookie_secure": "false"}, "session_cookie_secure"),
+    ({"audit_max_bytes": True}, "audit_max_bytes"),
+    ({"audit_max_bytes": 0}, "audit_max_bytes"),
+    ({"audit_backup_count": 0}, "audit_backup_count"),
+    ({"audit_backup_count": 101}, "audit_backup_count"),
+    ({"trusted_proxies": "127.0.0.1"}, "trusted_proxies"),
+    ({"trusted_proxies": ["proxy.example"]}, "trusted_proxies"),
+    ({"trusted_proxies": ["192.0.2.1/24"]}, "trusted_proxies"),
+    ({"oidc_group_role_map": {"users": "root"}}, "oidc_group_role_map"),
+    ({"oidc_claim_role_map": {"": "viewer"}}, "oidc_claim_role_map"),
+    ({"oidc_claim_role_map": {"users": 1}}, "oidc_claim_role_map"),
+    ({"oidc_groups_claim": "groups..name"}, "oidc_groups_claim"),
+    ({"oidc_roles_claim": ""}, "oidc_roles_claim"),
+    ({"oidc_client_secret": 123}, "oidc_client_secret"),
+])
+def test_security_settings_fail_closed(settings, field):
+    with pytest.raises(ValueError, match=field):
+        AppConfig(**settings)
+
+
+@pytest.mark.parametrize("field", ["oidc_issuer", "oidc_redirect_uri"])
+@pytest.mark.parametrize("url", [
+    "http://idp.example/path", "https://user:password@idp.example/path",
+    "https://idp.example/path#fragment", "not-a-url", "https://idp.example:invalid/",
+    "https://idp.example/ bad", "https://idp.example\\bad/",
+])
+def test_oidc_urls_reject_unsafe_values_without_echoing_them(field, url):
+    with pytest.raises(ValueError, match=field) as error:
+        AppConfig(**{field: url})
+    assert url not in str(error.value)
+
+
+@pytest.mark.parametrize("host", ["https://idp.example", "http://localhost:8080", "http://127.0.0.1", "http://[::1]:8080"])
+def test_oidc_accepts_https_and_loopback_public_pkce_clients(host):
+    config = AppConfig(
+        oidc_enabled=True, oidc_issuer=host, oidc_client_id="public-client",
+        oidc_redirect_uri=host + "/callback", oidc_claim_role_map={"users": "viewer"},
+        trusted_proxies=["127.0.0.1", "::1", "192.0.2.0/24"],
+    )
+    assert config.oidc_client_secret == ""
+
+
+def test_oidc_requires_all_identity_settings_and_mapping():
+    fields = {
+        "oidc_issuer": "https://idp.example", "oidc_client_id": "client",
+        "oidc_redirect_uri": "https://app.example/callback",
+        "oidc_claim_role_map": {"users": "viewer"},
+    }
+    for missing in fields:
+        with pytest.raises(ValueError):
+            AppConfig(oidc_enabled=True, **{key: value for key, value in fields.items() if key != missing})
+
+
+def test_public_settings_never_expose_client_secret():
+    config = AppConfig(
+        oidc_client_secret="very-secret-client-value",
+        oidc_client_id="prefix-very-secret-client-value",
+        oidc_group_role_map={"very-secret-client-value": "viewer"},
+    )
+    public = public_settings(config)
+    assert "very-secret-client-value" not in repr(public)
+    assert "oidc_client_secret" not in public
+    assert public["allow_anonymous_viewing"] is False
+    assert public["session_cookie_secure"] is True
+
+
+@pytest.mark.parametrize("left,right", [
+    ("netinfra_path", "config_path"), ("netinfra_path", "admin_file"),
+    ("netinfra_path", "audit_log_file"), ("admin_file", "config_path"),
+    ("audit_log_file", "admin_file"),
+])
+@pytest.mark.parametrize("alias_type", ["canonical", "symlink", "hardlink"])
+def test_protected_files_cannot_alias_each_other(tmp_path, left, right, alias_type):
+    original = tmp_path / "protected"
+    original.write_text("private data", encoding="utf-8")
+    alias = tmp_path / "alias"
+    if alias_type == "symlink":
+        alias.symlink_to(original)
+    elif alias_type == "hardlink":
+        alias.hardlink_to(original)
+    else:
+        alias = tmp_path / "." / "protected"
+    with pytest.raises(ValueError, match="separate files"):
+        AppConfig(**{left: str(original), right: str(alias)})
+
+
+def test_malformed_yaml_errors_do_not_echo_credentials(tmp_path):
+    path = tmp_path / "settings.yml"
+    path.write_text('oidc_client_secret: [private-value\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="valid YAML") as error:
+        load_config(path)
+    assert "private-value" not in str(error.value)
+
+
+@pytest.mark.parametrize("settings", [
+    {"dns_servers": ["private-secret"]},
+    {"subnet_dns_servers": {"private-secret": []}},
+    {"subnet_dns_servers": {"10.0.0.0/24": ["private-secret"]}},
+    {"oidc_group_role_map": {"users": "private-secret"}},
+])
+def test_validation_errors_never_echo_setting_values(settings):
+    with pytest.raises(ValueError) as error:
+        AppConfig(**settings)
+    assert "private-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_settings_containing_secrets_are_private_even_with_permissive_umask(tmp_path, existing):
+    import os
+    import secrets
+    import stat
+
+    path = tmp_path / "settings.yml"
+    if existing:
+        path.write_text("previous configuration")
+        path.chmod(0o666)
+    config = AppConfig(config_path=str(path), oidc_client_secret=secrets.token_urlsafe(32))
+    previous = os.umask(0)
+    try:
+        save_config(config)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert load_config(path).oidc_client_secret == config.oidc_client_secret
+
+
+def test_settings_write_failure_preserves_previous_configuration(tmp_path, monkeypatch):
+    import netinfra_ipman.config as settings
+
+    path = tmp_path / "settings.yml"
+    config = AppConfig(config_path=str(path))
+    save_config(config)
+    original = path.read_bytes()
+
+    def disk_failure(*args, **kwargs):
+        raise OSError("Simulated storage failure")
+
+    monkeypatch.setattr(settings.os, "replace", disk_failure)
+    config.allow_anonymous_viewing = True
+    with pytest.raises(OSError, match="storage failure"):
+        save_config(config)
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob(".ipman-config-*")) == []

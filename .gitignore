@@ -10,3 +10,8 @@ NetInfra.yml.*.bak
 ipman.sqlite3
 ipman.sqlite3-wal
 ipman.sqlite3-shm
+ipman.sqlite3-journal
+ipman-admin.yml.lock
+.ipman-admin-*
+ipman-audit.log.*
+.ipman-config-*

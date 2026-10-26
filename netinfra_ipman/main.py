@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
+import hashlib
 import os
 import shutil
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from ipaddress import IPv4Address, IPv4Network, collapse_addresses, ip_network
 from pathlib import Path
@@ -12,17 +14,17 @@ from io import StringIO
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 from ruamel.yaml import YAML
 
-from .audit import AuditLogger
+from .audit import AuditLogger, source_ip as audit_source_ip
 from .persistence import RuntimeStore
 from .checks import reconcile
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, SECRET_FIELDS, load_config, public_settings, save_config
 from .gitops import commit_changes, ensure_clean_checkout
 from .models import Inventory
 from .netinfra import (
@@ -33,19 +35,38 @@ from .netinfra import (
     save_netinfra,
 )
 from .scanner import ScanManager
+from .oidc import OidcClient, OIDCError
 from .security import (
+    Principal,
+    SecurityManager,
     authenticate,
     change_password,
-    current_user,
-    login_response,
-    logout_response,
+    require_admin,
+    require_editor,
     require_user,
+    require_viewer,
+    verify_csrf,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_csrf)])
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
+templates.env.globals["csrf_token"] = lambda request: request.app.state.services.security.csrf_token(request)
+
+RESTART_FIELDS = frozenset({
+    "config_path", "sqlite_path", "admin_file", "session_cookie_secure",
+    "oidc_enabled", "oidc_issuer", "oidc_client_id", "oidc_redirect_uri",
+    "oidc_groups_claim", "oidc_roles_claim", "oidc_group_role_map", "oidc_claim_role_map",
+    "trusted_proxies",
+})
+
+
+def readonly_settings(config: AppConfig) -> frozenset[str]:
+    actual = asdict(config)
+    return RESTART_FIELDS | frozenset(
+        key for key, value in public_settings(config).items() if key not in actual or actual[key] != value
+    )
 
 @dataclass
 class Services:
@@ -53,6 +74,8 @@ class Services:
     store: RuntimeStore
     audit: AuditLogger
     scanner: ScanManager
+    security: SecurityManager
+    oidc: OidcClient
 
 
 def create_app(settings: AppConfig | None = None) -> FastAPI:
@@ -60,38 +83,64 @@ def create_app(settings: AppConfig | None = None) -> FastAPI:
     async def lifespan(application: FastAPI):
         config = replace(settings) if settings is not None else load_config()
         config.validate()
-        store = RuntimeStore(config.sqlite_path)
-        audit = None
-        scanner = None
         try:
-            store.initialize()
-            audit = AuditLogger(config)
-            scanner = ScanManager(config, store)
-            application.state.services = Services(config, store, audit, scanner)
-            yield
+            async with AsyncExitStack() as cleanup:
+                store = RuntimeStore(config.sqlite_path)
+                store.initialize()
+                cleanup.callback(store.close)
+                audit = AuditLogger(config)
+                def close_audit() -> None:
+                    # Live settings replace the logger; close the current one.
+                    services = getattr(application.state, "services", None)
+                    (services.audit if services is not None else audit).close()
+                cleanup.callback(close_audit)
+                scanner = ScanManager(config, store)
+                cleanup.push_async_callback(scanner.close)
+                security = SecurityManager(config, store)
+                oidc = OidcClient(config, store)
+                cleanup.push_async_callback(oidc.close)
+                application.state.services = Services(config, store, audit, scanner, security, oidc)
+                yield
         finally:
-            try:
-                if scanner is not None:
-                    await scanner.close()
-            finally:
-                if audit is not None:
-                    audit.close()
-                store.close()
-                if hasattr(application.state, "services"):
-                    del application.state.services
+            if hasattr(application.state, "services"):
+                del application.state.services
 
     application = FastAPI(title="NetInfra IP Manager", lifespan=lifespan)
     application.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
     application.include_router(router)
+
+    @application.exception_handler(401)
+    async def unauthenticated(request: Request, exc: HTTPException):
+        if request.method in {"GET", "HEAD"} and "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse("/login", status_code=303)
+        return JSONResponse({"detail": exc.detail}, status_code=401, headers=exc.headers)
+
+    @application.middleware("http")
+    async def audit_requests(request: Request, call_next):
+        services = request.app.state.services
+        user = services.security.current_user(request)
+        actor = user.subject if user else "anonymous"
+        client_ip = audit_source_ip(request, services.config)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            pattern = getattr(request.scope.get("route"), "path", "<unmatched>")
+            services.audit.record(actor, client_ip, "request_failed",
+                                  f"{request.method} {pattern}: {type(exc).__name__}")
+            raise
+        if request.method not in {"GET", "HEAD", "OPTIONS"} or response.status_code >= 400:
+            pattern = getattr(request.scope.get("route"), "path", "<unmatched>")
+            services.audit.record(actor, client_ip, "request_outcome",
+                                  f"{request.method} {pattern}: HTTP {response.status_code}")
+        if not request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
     return application
 
 def source_ip(request: Request) -> str:
-    config = request.app.state.services.config
-    if config.reverse_proxy:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return audit_source_ip(request, request.app.state.services.config)
 
 
 def load_state(config: AppConfig) -> tuple[Inventory | None, list[str]]:
@@ -150,7 +199,7 @@ def subnet_rows(cidr: str, inventory: Inventory, config: AppConfig, store: Runti
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, subnet: str | None = None, page: int = Query(1, ge=1)):
+async def index(request: Request, subnet: str | None = None, page: int = Query(1, ge=1), user: Principal | None = Depends(require_viewer)):
     services = request.app.state.services
     config, store, scanner = services.config, services.store, services.scanner
     inventory, errors = load_state(config)
@@ -161,7 +210,6 @@ async def index(request: Request, subnet: str | None = None, page: int = Query(1
         request,
         "index.html",
         {
-            "config": config,
             "errors": errors,
             "subnets": subnets,
             "selected": selected,
@@ -170,13 +218,13 @@ async def index(request: Request, subnet: str | None = None, page: int = Query(1
             "page": page,
             "pages": pages,
             "jobs": scanner.as_dicts(),
-            "user": current_user(request),
+            "user": user,
         },
     )
 
 
 @router.get("/outliers", response_class=HTMLResponse)
-async def outliers(request: Request, page: int = Query(1, ge=1)):
+async def outliers(request: Request, page: int = Query(1, ge=1), user: Principal | None = Depends(require_viewer)):
     services = request.app.state.services
     inventory, errors = load_state(services.config)
     groups = inventory.outliers if inventory else []
@@ -189,12 +237,12 @@ async def outliers(request: Request, page: int = Query(1, ge=1)):
     ]
     return templates.TemplateResponse(request, "outliers.html", {
         "inventory": inventory, "errors": errors, "rows": rows,
-        "page": page, "pages": pages, "user": current_user(request),
+        "page": page, "pages": pages, "user": user,
     })
 
 
 @router.get("/hosts/{host_index}", response_class=HTMLResponse)
-async def host_details(request: Request, host_index: int):
+async def host_details(request: Request, host_index: int, user: Principal | None = Depends(require_viewer)):
     try:
         data = load_netinfra(request.app.state.services.config.netinfra_path)
     except NetInfraError as exc:
@@ -205,12 +253,12 @@ async def host_details(request: Request, host_index: int):
     output = StringIO()
     YAML().dump(hosts[host_index], output)
     return templates.TemplateResponse(request, "host.html", {
-        "host_index": host_index, "host_yaml": output.getvalue(), "user": current_user(request),
+        "host_index": host_index, "host_yaml": output.getvalue(), "user": user,
     })
 
 
 @router.post("/refresh")
-async def refresh(request: Request, subnet: str = Form(...), user: str = Depends(require_user)):
+async def refresh(request: Request, subnet: str = Form(...), user: Principal = Depends(require_editor)):
     services = request.app.state.services
     config, scanner, audit = services.config, services.scanner, services.audit
     inventory, errors = load_state(config)
@@ -221,12 +269,12 @@ async def refresh(request: Request, subnet: str = Form(...), user: str = Depends
         job = await scanner.refresh(str(network), inventory)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    audit.record(user, source_ip(request), "refresh", f"Refresh job {job.id}: {job.status}, {job.progress}/{job.total} addresses")
+    audit.record(user.subject, source_ip(request), "refresh", f"Refresh job {job.id}: {job.status}, {job.progress}/{job.total} addresses")
     return RedirectResponse(f"/?subnet={subnet}", status_code=303)
 
 
 @router.post("/scan")
-async def scan(request: Request, subnet: str = Form(...), confirm_large: bool = Form(False), user: str = Depends(require_user)):
+async def scan(request: Request, subnet: str = Form(...), confirm_large: bool = Form(False), user: Principal = Depends(require_editor)):
     services = request.app.state.services
     config, scanner, audit = services.config, services.scanner, services.audit
     inventory, errors = load_state(config)
@@ -241,21 +289,21 @@ async def scan(request: Request, subnet: str = Form(...), confirm_large: bool = 
         job = scanner.start(str(network), inventory)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    audit.record(user, source_ip(request), "scan", f"Started scan {job.id} for {subnet}")
+    audit.record(user.subject, source_ip(request), "scan", f"Started scan {job.id} for {subnet}")
     return RedirectResponse(f"/?subnet={subnet}", status_code=303)
 
 
 @router.post("/scan/{job_id}/cancel")
-async def cancel_scan(request: Request, job_id: str, user: str = Depends(require_user)):
+async def cancel_scan(request: Request, job_id: str, user: Principal = Depends(require_editor)):
     services = request.app.state.services
     scanner, audit = services.scanner, services.audit
     scanner.cancel(job_id)
-    audit.record(user, source_ip(request), "scan_cancel", f"Cancelled scan {job_id}")
+    audit.record(user.subject, source_ip(request), "scan_cancel", f"Cancelled scan {job_id}")
     return RedirectResponse("/", status_code=303)
 
 
 @router.get("/add", response_class=HTMLResponse)
-async def add_form(request: Request, ip: str, user: str = Depends(require_user)):
+async def add_form(request: Request, ip: str, user: Principal = Depends(require_editor)):
     return templates.TemplateResponse(request, "add.html", {"ip": ip, "user": user})
 
 
@@ -267,7 +315,7 @@ async def add_preview(
     target: str = Form(...),
     mac: str = Form(""),
     comment: str = Form(""),
-    user: str = Depends(require_user),
+    user: Principal = Depends(require_editor),
 ):
     config = request.app.state.services.config
     data = load_netinfra(config.netinfra_path)
@@ -294,21 +342,23 @@ async def add_commit(
     target: str = Form(...),
     mac: str = Form(""),
     comment: str = Form(""),
-    user: str = Depends(require_user),
+    user: Principal = Depends(require_editor),
 ):
     services = request.app.state.services
     config, audit = services.config, services.audit
     ensure_clean_checkout(config)
     path = Path(config.netinfra_path)
     data = load_netinfra(path)
-    before = path.read_text(encoding="utf-8")
+    before = path.read_bytes()
     backup = path.with_name(f"{path.name}.{Path.cwd().name}.bak")
     timestamped = path.with_suffix(path.suffix + f".{__import__('datetime').datetime.utcnow().strftime('%Y%m%d%H%M%S')}.bak")
     shutil.copy2(path, timestamped)
     append_discovered_host(data, name, zone_name, target, mac or None, comment or None)
     save_netinfra(path, data)
-    after = path.read_text(encoding="utf-8")
-    audit.record(user, source_ip(request), "write_back", f"Added {target} to Hosts", before=before, after=after)
+    after = path.read_bytes()
+    audit.record(user.subject, source_ip(request), "write_back", f"Added {target} to Hosts",
+                 before={"revision": hashlib.sha256(before).hexdigest()},
+                 after={"revision": hashlib.sha256(after).hexdigest()})
     relative = str(path.relative_to(config.git_repo_path)) if config.git_enabled else str(path)
     commit_changes(config, f"Add discovered host {target}", [relative])
     if backup.exists():
@@ -317,26 +367,41 @@ async def add_commit(
 
 
 @router.get("/options", response_class=HTMLResponse)
-async def options(request: Request):
-    return templates.TemplateResponse(request, "options.html", {"config": request.app.state.services.config, "user": current_user(request)})
+async def options(request: Request, user: Principal = Depends(require_admin)):
+    services = request.app.state.services
+    return templates.TemplateResponse(request, "options.html", {
+        "settings": public_settings(services.config), "secret_fields": SECRET_FIELDS,
+        "restart_fields": readonly_settings(services.config), "user": user,
+    })
 
 
 @router.post("/options")
-async def options_save(request: Request, user: str = Depends(require_user)):
+async def options_save(request: Request, user: Principal = Depends(require_admin)):
     services = request.app.state.services
     config = replace(services.config)
     form = await request.form()
-    before = asdict(config)
-    for key, value in form.items():
-        if not hasattr(config, key):
+    before = public_settings(config)
+    readonly = readonly_settings(config)
+    for key in form:
+        if key == "csrf_token":
             continue
-        if key in {"sqlite_path", "config_path"}:
-            if value != getattr(config, key):
-                raise HTTPException(status_code=400, detail=f"{key} requires a restart; edit the configuration file")
+        if key in SECRET_FIELDS:
+            raise HTTPException(status_code=400, detail="Secrets must be changed in the protected configuration file")
+        if key not in AppConfig.__dataclass_fields__ or len(form.getlist(key)) != 1:
+            raise HTTPException(status_code=400, detail="Unknown or repeated settings field")
+        if key in readonly:
+            if key not in before or str(form[key]) != str(getattr(config, key)) or key not in RESTART_FIELDS:
+                raise HTTPException(status_code=400, detail="Protected settings require editing the configuration file and restarting")
+    for key, current in asdict(config).items():
+        if key in SECRET_FIELDS or key in readonly:
             continue
-        current = getattr(config, key)
+        if key not in form:
+            continue
+        value = form[key]
         try:
             if isinstance(current, bool):
+                if value not in {"on", "off"}:
+                    raise ValueError("Invalid boolean")
                 setattr(config, key, value == "on")
             elif isinstance(current, int):
                 setattr(config, key, int(value))
@@ -360,58 +425,137 @@ async def options_save(request: Request, user: str = Depends(require_user)):
     except Exception:
         replacement_audit.close()
         raise
-    services.audit.record(user, source_ip(request), "config_change", "Updated options", before=before, after=asdict(config))
+    target_audit = replacement_audit if config.audit_to_file or config.audit_to_syslog else services.audit
+    target_audit.record(user.subject, source_ip(request), "config_change", "Updated options",
+                          before=before, after=public_settings(config))
     services.audit.close()
     services.config = config
     services.audit = replacement_audit
     services.scanner.config = config
+    services.security.config = config
     return RedirectResponse("/options", status_code=303)
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request, user: Principal = Depends(require_admin)):
+    services = request.app.state.services
+    return templates.TemplateResponse(request, "audit.html", {
+        "events": services.audit.recent_events(), "file_logging": services.config.audit_to_file, "user": user,
+    })
+
+
+def render_login(request: Request, error: str | None = None, status_code: int = 200):
+    services = request.app.state.services
+    token, new_cookie = services.security.prepare_login(request)
+    response = templates.TemplateResponse(request, "login.html", {
+        "user": services.security.current_user(request), "error": error,
+        "login_csrf": token, "oidc_enabled": services.config.oidc_enabled,
+    }, status_code=status_code)
+    if new_cookie is not None:
+        services.security.set_cookie(response, new_cookie)
+    return response
 
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"user": current_user(request)})
+    return render_login(request)
 
 
 @router.post("/login")
-async def login(request: Request, response: Response, username: str = Form(...), password: str = Form(...)):
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     services = request.app.state.services
-    config, audit = services.config, services.audit
-    user_state = authenticate(config, username, password)
-    if not user_state:
-        audit.record(username, source_ip(request), "login_failed", "Failed login")
-        return templates.TemplateResponse(request, "login.html", {"error": "Invalid credentials"}, status_code=401)
-    audit.record(username, source_ip(request), "login", "Successful login")
-    redirect = RedirectResponse("/change-password" if user_state.must_change_password else "/", status_code=303)
-    login_response(redirect, config, username)
-    return redirect
+    try:
+        principal = await asyncio.to_thread(authenticate, services.config, username, password)
+    except HTTPException:
+        services.audit.record("anonymous", source_ip(request), "login_failed", "Emergency administrator login denied")
+        return render_login(request, "Login is temporarily unavailable.", status_code=423)
+    if principal is None:
+        services.audit.record("anonymous", source_ip(request), "login_failed", "Emergency administrator login denied")
+        return render_login(request, "Invalid credentials", status_code=401)
+    response = RedirectResponse("/change-password" if principal.must_change_password else "/", status_code=303)
+    services.security.revoke(request)
+    services.security.login(response, principal)
+    services.audit.record(principal.subject, source_ip(request), "login", "Emergency administrator login succeeded")
+    return response
+
+
+@router.post("/oidc/login")
+async def oidc_login(request: Request):
+    services = request.app.state.services
+    if not services.config.oidc_enabled:
+        raise HTTPException(status_code=404, detail="OIDC is disabled")
+    binding = services.security.browser_binding(request)
+    if binding is None:
+        raise HTTPException(status_code=403, detail="Start sign-in from the login page")
+    try:
+        url = await services.oidc.begin(binding)
+    except OIDCError:
+        services.audit.record("anonymous", source_ip(request), "oidc_failed", "OIDC sign-in could not start")
+        return render_login(request, "OIDC sign-in is unavailable.", status_code=503)
+    return RedirectResponse(url, status_code=303)
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(request: Request, state: str = "", code: str = ""):
+    services = request.app.state.services
+    if not services.config.oidc_enabled:
+        raise HTTPException(status_code=404, detail="OIDC is disabled")
+    try:
+        principal = await services.oidc.complete(state, code, services.security.browser_binding(request) or "")
+    except OIDCError:
+        services.audit.record("anonymous", source_ip(request), "oidc_failed", "OIDC callback rejected")
+        return render_login(request, "OIDC sign-in failed. Start again from this page.", status_code=401)
+    response = RedirectResponse("/", status_code=303)
+    services.security.revoke(request)
+    services.security.login(response, principal)
+    services.audit.record(principal.subject, source_ip(request), "login", "OIDC login succeeded")
+    return response
 
 
 @router.get("/change-password", response_class=HTMLResponse)
-async def change_password_page(request: Request, user: str = Depends(require_user)):
+async def change_password_page(request: Request, user: Principal = Depends(require_user)):
+    if user.auth_method != "local":
+        raise HTTPException(status_code=403, detail="Manage your SSO password at the identity provider")
     return templates.TemplateResponse(request, "change_password.html", {"user": user})
 
 
 @router.post("/change-password")
-async def change_password_submit(request: Request, password: str = Form(...), user: str = Depends(require_user)):
+async def change_password_submit(
+    request: Request, password: str = Form(...), current_password: str = Form(...),
+    confirm_password: str = Form(...), user: Principal = Depends(require_user),
+):
     services = request.app.state.services
-    config, audit = services.config, services.audit
-    change_password(config, user, password)
-    audit.record(user, source_ip(request), "password_change", "Changed password")
-    return RedirectResponse("/", status_code=303)
+    if user.auth_method != "local":
+        raise HTTPException(status_code=403, detail="Manage your SSO password at the identity provider")
+    if password != confirm_password:
+        return templates.TemplateResponse(request, "change_password.html",
+                                          {"user": user, "error": "New passwords do not match."}, status_code=400)
+    try:
+        principal = await asyncio.to_thread(change_password, services.config, user, current_password, password)
+    except (ValueError, HTTPException):
+        services.audit.record(user.subject, source_ip(request), "password_change_failed", "Password change rejected")
+        return templates.TemplateResponse(request, "change_password.html", {
+            "user": user, "error": "Password change failed. Check your current password and use at least 12 characters.",
+        }, status_code=400)
+    response = RedirectResponse("/", status_code=303)
+    services.security.revoke(request)
+    services.security.login(response, principal)
+    services.audit.record(user.subject, source_ip(request), "password_change", "Emergency administrator password changed")
+    return response
 
 
 @router.post("/logout")
-async def logout(request: Request):
-    audit = request.app.state.services.audit
-    redirect = RedirectResponse("/", status_code=303)
-    audit.record(current_user(request) or "anonymous", source_ip(request), "logout", "Logged out")
-    logout_response(redirect)
-    return redirect
+async def logout(request: Request, user: Principal = Depends(require_user)):
+    services = request.app.state.services
+    response = RedirectResponse("/login", status_code=303)
+    services.security.logout(request, response)
+    services.audit.record(user.subject, source_ip(request), "logout", "Session revoked")
+    return response
 
 
 app = create_app()
 
 
 def run() -> None:
-    uvicorn.run("netinfra_ipman.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), reload=False)
+    uvicorn.run("netinfra_ipman.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")),
+                reload=False, proxy_headers=False, access_log=False)

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NetInfra IP Manager</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/style.css').path }}">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
 </head>
 <body>
@@ -13,10 +13,11 @@
   <nav>
     <a href="/">Subnets</a>
     <a href="/outliers">Validation / outliers</a>
-    <a href="/options">Options</a>
+    {% if user and user.is_admin %}<a href="/options">Options</a><a href="/audit">Audit</a>{% endif %}
     {% if user %}
-      <span>Signed in as {{ user }}</span>
-      <form action="/logout" method="post"><button>Logout</button></form>
+      <span>Signed in as {{ user.username }} ({{ user.role.value }})</span>
+      {% if user.auth_method == 'local' %}<a href="/change-password">Change password</a>{% endif %}
+      <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button>Logout</button></form>
     {% else %}
       <a href="/login">Login</a>
     {% endif %}

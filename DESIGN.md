@@ -254,9 +254,9 @@ network observations.
 
 ## Implementation gaps
 
-Phases 1–2 of the implementation plan are delivered. The table distinguishes
-remaining gaps from completed foundation/reconciliation work; these are
-implementation differences, not undecided architecture choices.
+Phases 1–3 of the implementation plan are delivered. The table distinguishes
+remaining gaps from completed foundation, reconciliation, and access work; these
+are implementation differences, not undecided architecture choices.
 
 | Area | Current behavior | Required change |
 | --- | --- | --- |
@@ -269,13 +269,13 @@ implementation differences, not undecided architecture choices.
 | Scheduling | Durable disabled-by-default definitions; no dispatch/UI. | Interval/calendar schedules and overlap handling. |
 | Results | Raw observations reconcile per address; undocumented responders are visible with timestamps. | Compact discovery coverage, DHCP context, and reviewed host creation. |
 | Status | Exact DNS sets and MAC comparison; unavailable evidence is incomplete; relevant edits mark evidence stale. | Age/schedule-based freshness and administrator override. |
-| Storage | SQLite schema 2 retains raw latest observations, schedules, and bounded jobs; phase-1 upgrade removes cached intended values/verdicts. | Coverage and scheduling integration in later phases. |
+| Storage | SQLite schema 3 retains observations, schedules, bounded jobs, hashed sessions, and expiring OIDC transactions. | Coverage and scheduling integration in later phases. |
 | UI scale | Address and outlier views render bounded pages with direct IPv4 arithmetic. | Search/filtering and progressive scan updates. |
-| Authentication | CLI-only provisioning; still trusts an unsigned username cookie. | Verified sessions, CLI recovery, authorization, CSRF protection. |
-| SSO | Keycloak/Duo configuration fields without working integration. | Working OIDC; standalone Duo integration is not part of this design. |
-| Access/settings | Probes require login, but username cookies remain unsigned; anonymous viewing is fixed and settings expose configuration values. | Verified sessions, configurable viewing, authorization, and protected/redacted settings. |
+| Authentication | Verified expiring/revocable opaque sessions, CSRF, server-side roles, and CLI-only emergency provisioning/recovery. | Access foundation delivered; future routes must enforce the same policies. |
+| SSO | OIDC discovery, code/PKCE flow, signed RS256 ID-token validation, and explicit claim-to-role mapping. | Supply real provider/redirect/mapping configuration at deployment. |
+| Access/settings/audit | Anonymous view defaults off; optional viewing is read-only; admin-only redacted settings/audit, explicit proxy trust, private settings writes, and bounded audit rotation. | Schedule administration uses these policies when delivered in phase 5. |
 | Lifecycle | Explicit factory/lifespan initialization and awaited scan/storage/audit cleanup. | Foundation delivered; one worker required. |
-| Tests | 191 passing tests, including upstream inventory compatibility, reconciliation, migration, lifecycle, and cancellation. | Authorization, write safety, scheduling, and complete UI acceptance coverage. |
+| Tests | 396 passing tests, including identity/session/CSRF/role/OIDC failures, recovery, redaction, proxy trust, and earlier inventory/runtime behavior. | Host write safety, scheduling, and complete UI acceptance coverage. |
 
 ## Deployment configuration still required
 
@@ -294,5 +294,5 @@ preserve unrelated NetInfra content, enforce all roles in both anonymous-view
 modes, and remain responsive with large target ranges using bounded resources.
 
 Tests use simulated probes and controlled networks. Initial inspection lacked
-pytest; phase-2 verification now passes 191 tests. This does not establish full v1
-acceptance or make the remaining starter authentication/write paths safe to deploy.
+pytest; phase-3 verification now passes 396 tests. This does not establish full v1
+acceptance or make the remaining starter direct-write paths safe to deploy.

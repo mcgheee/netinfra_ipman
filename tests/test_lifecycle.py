@@ -20,6 +20,7 @@ def settings(tmp_path: Path) -> AppConfig:
         admin_file=str(tmp_path / 'admin.yml'),
         audit_log_file=str(tmp_path / 'audit.log'),
         sqlite_path=str(tmp_path / 'runtime.sqlite3'),
+        allow_anonymous_viewing=True,
     )
 
 
@@ -72,33 +73,8 @@ def test_separate_applications_have_isolated_services(tmp_path):
 def test_unavailable_database_fails_startup(tmp_path):
     config = settings(tmp_path)
     Path(config.sqlite_path).mkdir()
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises((OSError, sqlite3.OperationalError)):
         with TestClient(create_app(config)):
             pytest.fail('Startup must not fall back to process memory')
 
 
-@pytest.mark.parametrize('value', ['invalid', '-1'])
-def test_invalid_settings_leave_running_and_saved_config_unchanged(tmp_path, value):
-    from netinfra_ipman.security import require_user
-
-    config = settings(tmp_path)
-    app = create_app(config)
-    app.dependency_overrides[require_user] = lambda: 'test-editor'
-    with TestClient(app) as client:
-        response = client.post('/options', data={'scan_concurrency': value})
-        assert response.status_code == 400
-        assert app.state.services.config.scan_concurrency == 128
-        assert not Path(config.config_path).exists()
-
-
-def test_database_switch_requires_restart(tmp_path):
-    from netinfra_ipman.security import require_user
-
-    config = settings(tmp_path)
-    app = create_app(config)
-    app.dependency_overrides[require_user] = lambda: 'test-editor'
-    with TestClient(app) as client:
-        response = client.post('/options', data={'sqlite_path': str(tmp_path / 'other.sqlite3')})
-        assert response.status_code == 400
-        assert app.state.services.config.sqlite_path == config.sqlite_path
-        assert not (tmp_path / 'other.sqlite3').exists()

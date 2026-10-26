@@ -6,9 +6,42 @@ from ipaddress import IPv4Network, ip_address, ip_network
 import math
 import os
 from pathlib import Path
+import re
+import tempfile
+from urllib.parse import urlsplit
 from typing import Any, get_type_hints
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+
+
+SECRET_FIELDS = frozenset({"oidc_client_secret"})
+_ROLES = frozenset({"viewer", "editor", "administrator"})
+_CLAIM_PATH = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)*")
+
+
+def _validate_oidc_url(name: str, value: str) -> None:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        host = parsed.hostname
+    except ValueError:
+        raise ValueError(f"{name} must be a valid HTTPS URL") from None
+    if (
+        not host or parsed.username is not None or parsed.password is not None
+        or parsed.fragment or any(character.isspace() for character in value)
+        or "\\" in value or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ValueError(f"{name} must be a valid HTTPS URL without credentials or fragment")
+    loopback = host.lower() == "localhost"
+    try:
+        loopback = loopback or ip_address(host).is_loopback
+    except ValueError:
+        pass
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise ValueError(f"{name} requires HTTPS (HTTP is allowed only on loopback)")
+    if name == "oidc_issuer" and parsed.query:
+        raise ValueError("oidc_issuer must not contain a query")
 
 
 @dataclass
@@ -37,17 +70,20 @@ class AppConfig:
     session_timeout_minutes: int = 60
     lockout_attempts: int = 5
     lockout_minutes: int = 15
-    rate_limit_per_minute: int = 60
-    keycloak_enabled: bool = False
-    keycloak_metadata_url: str = ""
-    keycloak_client_id: str = ""
-    keycloak_client_secret: str = ""
-    duo_enabled: bool = False
-    duo_integration_key: str = ""
-    duo_secret_key: str = ""
-    duo_api_hostname: str = ""
-    tls_enabled: bool = False
-    reverse_proxy: bool = True
+    allow_anonymous_viewing: bool = False
+    session_cookie_secure: bool = True
+    trusted_proxies: list[str] = field(default_factory=list)
+    audit_max_bytes: int = 10 * 1024 * 1024
+    audit_backup_count: int = 5
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    oidc_groups_claim: str = "groups"
+    oidc_roles_claim: str = "roles"
+    oidc_group_role_map: dict[str, str] = field(default_factory=dict)
+    oidc_claim_role_map: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.validate()
@@ -65,6 +101,10 @@ class AppConfig:
                     type(key) is str and isinstance(servers, list)
                     and all(type(server) is str for server in servers)
                     for key, servers in value.items()
+                )
+            elif annotation == dict[str, str]:
+                valid = isinstance(value, dict) and all(
+                    type(key) is str and type(item) is str for key, item in value.items()
                 )
             else:
                 valid = type(value) is annotation
@@ -86,7 +126,7 @@ class AppConfig:
                 raise ValueError(f"{name} must not be empty")
         for name in (
             "scan_concurrency", "session_timeout_minutes", "lockout_attempts",
-            "lockout_minutes", "rate_limit_per_minute",
+            "lockout_minutes",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be greater than zero")
@@ -104,28 +144,60 @@ class AppConfig:
         for server in self.dns_servers:
             try:
                 ip_address(server)
-            except ValueError as exc:
-                raise ValueError(f"dns_servers contains an invalid IP address: {server!r}") from exc
+            except ValueError:
+                raise ValueError("dns_servers contains an invalid IP address") from None
         for cidr, servers in self.subnet_dns_servers.items():
             try:
                 network = ip_network(cidr, strict=True)
-            except ValueError as exc:
-                raise ValueError(f"subnet_dns_servers has an invalid canonical CIDR: {cidr!r}") from exc
+            except ValueError:
+                raise ValueError("subnet_dns_servers has an invalid canonical CIDR") from None
             if not isinstance(network, IPv4Network) or str(network) != cidr:
                 raise ValueError("subnet_dns_servers keys must be canonical IPv4 CIDRs")
             for server in servers:
                 try:
                     ip_address(server)
-                except ValueError as exc:
-                    raise ValueError(f"subnet_dns_servers contains an invalid resolver IP: {server!r}") from exc
+                except ValueError:
+                    raise ValueError("subnet_dns_servers contains an invalid resolver IP") from None
 
-        sqlite_path = Path(self.sqlite_path).resolve()
-        for name in ("netinfra_path", "config_path", "admin_file", "audit_log_file"):
-            other_path = Path(getattr(self, name)).resolve()
-            if sqlite_path == other_path or (
-                sqlite_path.exists() and other_path.exists() and sqlite_path.samefile(other_path)
-            ):
-                raise ValueError(f"sqlite_path must be separate from {name}")
+        for name, lower, upper in (
+            ("audit_max_bytes", 1024, 1024 * 1024 * 1024),
+            ("audit_backup_count", 1, 100),
+            ("session_timeout_minutes", 1, 10080),
+            ("lockout_attempts", 1, 100),
+            ("lockout_minutes", 1, 10080),
+        ):
+            if not lower <= getattr(self, name) <= upper:
+                raise ValueError(f"{name} must be between {lower} and {upper}")
+        for proxy in self.trusted_proxies:
+            try:
+                ip_network(proxy, strict=True)
+            except ValueError:
+                raise ValueError("trusted_proxies must contain IP addresses or canonical CIDRs") from None
+        for name in ("oidc_groups_claim", "oidc_roles_claim"):
+            if not _CLAIM_PATH.fullmatch(getattr(self, name)):
+                raise ValueError(f"{name} must be a dotted claim path")
+        for name in ("oidc_group_role_map", "oidc_claim_role_map"):
+            if any(not key.strip() or role not in _ROLES for key, role in getattr(self, name).items()):
+                raise ValueError(f"{name} requires nonempty claim values mapped to viewer/editor/administrator")
+        for name in ("oidc_issuer", "oidc_redirect_uri"):
+            if getattr(self, name):
+                _validate_oidc_url(name, getattr(self, name))
+        if self.oidc_enabled:
+            for name in ("oidc_issuer", "oidc_client_id", "oidc_redirect_uri"):
+                if not getattr(self, name).strip():
+                    raise ValueError(f"{name} is required when oidc_enabled")
+            if not (self.oidc_group_role_map or self.oidc_claim_role_map):
+                raise ValueError("oidc_enabled requires a nonempty role mapping")
+
+        protected = ("netinfra_path", "config_path", "admin_file", "audit_log_file", "sqlite_path")
+        for index, name in enumerate(protected):
+            path = Path(getattr(self, name)).resolve()
+            for other in protected[index + 1:]:
+                other_path = Path(getattr(self, other)).resolve()
+                if path == other_path or (
+                    path.exists() and other_path.exists() and path.samefile(other_path)
+                ):
+                    raise ValueError(f"{name} and {other} must be separate files")
 
 
 def _coerce_config(data: Any, config_path: str) -> AppConfig:
@@ -133,6 +205,17 @@ def _coerce_config(data: Any, config_path: str) -> AppConfig:
         raise ValueError("Configuration must be a YAML mapping of setting names to values")
     if "redis_url" in data:
         raise ValueError("redis_url is no longer supported; replace it with sqlite_path")
+    retired = [
+        name for name in data
+        if isinstance(name, str) and (
+            name.startswith(("keycloak_", "duo_")) or name in {"tls_enabled", "reverse_proxy", "rate_limit_per_minute"}
+        )
+    ]
+    if retired:
+        raise ValueError(
+            "Retired authentication/proxy settings: " + ", ".join(sorted(retired))
+            + "; migrate to oidc_*, session_cookie_secure and trusted_proxies; configure request limits and TLS at your proxy"
+        )
     unknown = set(data) - set(AppConfig.__dataclass_fields__)
     if unknown:
         raise ValueError(f"Unknown configuration settings: {', '.join(sorted(map(str, unknown)))}")
@@ -153,9 +236,30 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     yaml = YAML(typ="safe")
     if not config_path.exists():
         return AppConfig(config_path=str(config_path))
-    with config_path.open("r", encoding="utf-8") as handle:
-        data = yaml.load(handle)
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml.load(handle)
+    except YAMLError:
+        raise ValueError("Configuration must be valid YAML") from None
     return _coerce_config(data, str(config_path))
+
+
+def public_settings(config: AppConfig) -> dict[str, Any]:
+    """Settings safe to render; secrets never cross the public boundary."""
+    secrets = [getattr(config, name) for name in SECRET_FIELDS if getattr(config, name)]
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, str):
+            for secret in secrets:
+                value = value.replace(secret, "[REDACTED]")
+            return value
+        if isinstance(value, dict):
+            return {redact(key): redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    return redact({name: value for name, value in asdict(config).items() if name not in SECRET_FIELDS})
 
 
 def save_config(config: AppConfig, path: str | Path | None = None) -> None:
@@ -168,6 +272,14 @@ def save_config(config: AppConfig, path: str | Path | None = None) -> None:
     AppConfig(**{**asdict(config), "config_path": str(out_path)})
     yaml = YAML()
     yaml.default_flow_style = False
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as handle:
-        yaml.dump(asdict(config), handle)
+    out_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".ipman-config-", dir=out_path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            yaml.dump(asdict(config), handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, out_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)

@@ -18,7 +18,7 @@
     {% elif value is iterable and value is not string %}
       <input name="{{ key }}" value="{{ value|join(',') }}" {% if key in restart_fields %}disabled{% endif %}>
     {% else %}
-      <input name="{{ key }}" value="{{ value }}" {% if key in restart_fields %}disabled{% endif %}>
+      <input name="{{ key }}" value="{{ '' if key == 'freshness_seconds' and value is none else value }}" {% if key == 'freshness_seconds' %}placeholder="blank uses schedule-derived age"{% endif %} {% if key in restart_fields %}disabled{% endif %}>
     {% endif %}
     </label>
   {% endfor %}

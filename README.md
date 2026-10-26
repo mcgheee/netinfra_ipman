@@ -7,8 +7,11 @@ and comparing intended configuration with network observations. The
 
 ## Implementation status
 
-Phases 1–5 (foundation, reconciliation, secure access, reviewed host writes, and
-scan/schedule runtime) are implemented. Phase 6 remains required for v1.
+All six implementation phases are delivered. The phase-6 work adds search and
+discrepancy filtering, sparse large-network queries, age-based freshness,
+declared DHCP-pool context, scan progress polling, reviewed discovery proposals,
+and a documented single-server TLS deployment. Deployment-specific OIDC,
+trusted-proxy, network, and file/Git values remain operator configuration.
 
 - `create_app()` constructs independent applications without creating configuration,
   credentials, logs, or database files at import time.
@@ -88,10 +91,16 @@ Host changes now use a shared reviewed transaction service:
   pushes, reports commit failure separately from a successful file save, and
   provides a guarded retry. Remove retired `git_push` and `git_remote` settings.
 
-**This is not production-ready v1.** Phase 5 scan/schedule behavior is implemented.
-Phase 6 remains: age-based freshness, search/filtering, progressive HTMX updates,
-DHCP-pool context, discovery-to-host review, and deployment/UI acceptance. Validate
-host writes first against a disposable NetInfra copy.
+**Phase 6 is implemented.** Inventory search/filtering, progressive job updates,
+age-based freshness, DHCP-pool context, reviewed discovery creation, and a
+single-server deployment package are delivered. Production readiness still
+depends on validating the real identity provider, routing/resolver access,
+file/Git permissions, storage, and operational recovery procedures. Start with
+a disposable NetInfra copy.
+
+For the Linux single-server TLS deployment, see [deploy/README.md](deploy/README.md).
+The Compose and Caddy examples are operator templates; validate them against the
+installed Docker, Caddy, proxy, and host networking configuration.
 
 ## Development quick start
 
@@ -278,14 +287,13 @@ External syslog retention is the operator's responsibility.
 ```
 
 Tests use temporary files/databases and simulated probes/provider responses. The
-full suite passes **561 tests** with one Starlette/httpx TestClient deprecation
+full suite passes **654 tests** with one Starlette/httpx TestClient deprecation
 warning. Coverage includes target boundaries and large streamed ranges, rate and
 concurrency limits, confirmation, cancellation/partial evidence, compact coverage,
-interval/calendar scheduling and DST, role/CSRF enforcement, plus earlier host,
-security, identity, inventory, lifecycle, and persistence behavior.
-
-An isolated authenticated Uvicorn/browser smoke rendered the scan controls and
-administrator schedule page, created a disabled schedule, and reached the
-large-scan confirmation page without starting probes. No live network scan was
-used. Earlier phase-3 OIDC browser checks used a temporary local provider; no
-external identity provider was contacted.
+interval/calendar scheduling and DST, freshness boundaries and schedule scope,
+role/CSRF enforcement, plus earlier host, security, identity, inventory,
+lifecycle, and persistence behavior. A temporary Uvicorn/browser smoke rendered
+search results and freshness text; a separate temporary-app smoke rendered
+discovery/DHCP context and editor proposal review without changing YAML. No live
+probe or external identity provider was contacted. Docker was unavailable, so
+Compose and container build execution remain unverified.

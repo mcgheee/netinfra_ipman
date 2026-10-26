@@ -123,6 +123,11 @@ class RuntimeStore:
         row = self._db.execute("SELECT payload FROM observations WHERE key = ?", (key,)).fetchone()
         return json.loads(row[0]) if row is not None else None
 
+    def observation_ips(self):
+        """Stream sparse observation addresses without materializing payloads."""
+        for row in self._db.execute("SELECT key FROM observations WHERE key LIKE 'observation:%'"):
+            yield row[0].removeprefix("observation:")
+
     def set(self, key: str, value: dict[str, Any]) -> None:
         with self._db:
             self._db.execute(

@@ -56,6 +56,7 @@ class AppConfig:
     backup_dir: str = "./ipman-backups"
     backup_retention: int = 20
     completed_job_retention: int = 100
+    freshness_seconds: float | None = None
     scan_concurrency: int = 128
     scan_start_rate: float = 100.0
     manual_scan_confirmation_threshold: int = 4096
@@ -94,6 +95,8 @@ class AppConfig:
             value = getattr(self, name)
             if annotation is float:
                 valid = type(value) in (int, float)
+            elif annotation == float | None:
+                valid = value is None or type(value) in (int, float)
             elif annotation == list[str]:
                 valid = isinstance(value, list) and all(type(item) is str for item in value)
             elif annotation == dict[str, list[str]]:
@@ -139,6 +142,13 @@ class AppConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and greater than zero")
+        if self.freshness_seconds is not None:
+            try:
+                valid_freshness = math.isfinite(self.freshness_seconds) and self.freshness_seconds > 0
+            except OverflowError:
+                valid_freshness = False
+            if not valid_freshness:
+                raise ValueError("freshness_seconds must be null or finite and greater than zero")
         for server in self.dns_servers:
             try:
                 ip_address(server)

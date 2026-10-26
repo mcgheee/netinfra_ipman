@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Undocumented responders</h2>
+<p>A responding address is not proof of ownership or a verified DHCP lease.</p>
+{% for error in errors %}<div class="banner error">{{ error }}</div>{% endfor %}
+<table><thead><tr><th>IP</th><th>Observed</th><th>Declared DHCP pool context</th><th>Review</th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.ip }}</td><td>{{ row.checked_at or 'timestamp unavailable' }}</td><td>{% for pool in row.dhcp_pools %}{{ pool.explanation }} {{ pool.subnet }} pool {{ pool.pool }}{% else %}No declared DHCP pool contains this address.{% endfor %}</td><td>{% if user and user.can_edit %}<a href="/discoveries/{{ row.ip }}/review">Prepare host proposal</a>{% else %}Editor permission required{% endif %}</td></tr>
+{% else %}<tr><td colspan="4">No current undocumented responders.</td></tr>{% endfor %}
+</tbody></table>
+<nav class="pagination" aria-label="Discovery pages">
+  {% if page > 1 %}<a href="/discoveries?page={{ page - 1 }}">Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }} (up to 256 responders per page)</span>
+  {% if page < pages %}<a href="/discoveries?page={{ page + 1 }}">Next</a>{% endif %}
+</nav>
+{% endblock %}

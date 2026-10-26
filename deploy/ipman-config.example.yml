@@ -1,0 +1,42 @@
+# Copy to /srv/ipman/config/ipman-config.yml with mode 0600, owner 10001:10001.
+# These are container paths, not host paths. Never commit the populated file.
+netinfra_path: /srv/netinfra/NetInfra.yml
+config_path: /etc/ipman/ipman-config.yml
+admin_file: /var/lib/ipman/runtime/ipman-admin.yml
+sqlite_path: /var/lib/ipman/runtime/ipman.sqlite3
+audit_log_file: /var/lib/ipman/runtime/ipman-audit.log
+audit_to_file: true
+audit_to_syslog: false
+audit_max_bytes: 10485760
+audit_backup_count: 5
+backup_dir: /var/backups/ipman
+backup_retention: 20
+completed_job_retention: 100
+scan_concurrency: 128
+scan_start_rate: 100.0
+manual_scan_confirmation_threshold: 4096
+ping_timeout: 1.0
+dns_timeout: 2.0
+dns_lifetime: 2.0
+# Set resolvers reachable from this host; these are not DHCP options.
+dns_servers: []
+subnet_dns_servers: {}
+git_enabled: false
+git_repo_path: /srv/netinfra
+git_branch: main
+allow_anonymous_viewing: false
+session_cookie_secure: true
+session_timeout_minutes: 60
+lockout_attempts: 5
+lockout_minutes: 15
+# Only the host Caddy's immediate loopback connection is trusted.
+trusted_proxies: ["127.0.0.1/32"]
+oidc_enabled: false
+oidc_issuer: ""
+oidc_client_id: ""
+oidc_client_secret: ""
+oidc_redirect_uri: ""
+oidc_groups_claim: groups
+oidc_roles_claim: roles
+oidc_group_role_map: {}
+oidc_claim_role_map: {}

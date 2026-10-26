@@ -1,0 +1,50 @@
+name: netinfra-ipman
+services:
+  ipman:
+    image: netinfra-ipman:local
+    build:
+      context: ..
+      dockerfile: Containerfile
+    # Linux host networking preserves the server's routing/DNS/L2 view.
+    # The image command listens only on 127.0.0.1; Caddy runs on the host.
+    network_mode: host
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+    # Python has only cap_net_raw=ep. no-new-privileges would block this file
+    # capability for the unprivileged user; do not enable it with this probe setup.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    environment:
+      IPMAN_CONFIG: /etc/ipman/ipman-config.yml
+    volumes:
+      - type: bind
+        source: /srv/ipman/config
+        target: /etc/ipman
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/ipman/runtime
+        target: /var/lib/ipman/runtime
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/ipman/inventory
+        target: /srv/netinfra
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/ipman/backups
+        target: /var/backups/ipman
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+    stop_grace_period: 60s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"

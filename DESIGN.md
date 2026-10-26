@@ -252,29 +252,24 @@ network observations.
 | Freshness | Twice applicable scheduled interval, otherwise 24 hours; overridable. |
 | Git | Optional local commits; no automatic push. |
 
-## Implementation gaps
+## Implementation status
 
-Phases 1–5 of the implementation plan are delivered. The table distinguishes
-remaining phase-6 workflow and deployment gaps from completed foundation,
-reconciliation, access, reviewed host-write, and scan/schedule behavior.
+All six implementation phases are delivered. The core behavior below is
+implemented; real provider, proxy, routing, and file permissions remain
+deployment-specific acceptance work.
 
-| Area | Current behavior | Required change |
-| --- | --- | --- |
-| Inventory | Optional MACs, grouped authority/conflicts, retained definitions, and visible outliers. | Foundation for full reviewed host editing is delivered. |
-| DNS identity | `Source`, `AltHostName`, then `Name`; absolute/relative handling and NetInfra tokens. | Compatibility behavior delivered; original values remain intact. |
-| Editing | `/hosts` provides bounded host listing/details and editor-only create/update/delete with common fields and full advanced YAML. Imports accept pasted/uploaded lists or `Hosts:` wrappers; name collisions reject the whole batch. | Host edits, deletion, and bulk creation delivered. |
-| Validation | The full proposal is checked for structure, known field values, duplicate names, MAC conflicts, and eligible out-of-subnet targets. Valid shared IPs and live discrepancies do not block saves. | Full preview/apply validation delivered. |
-| Saving | Actor-bound tokens bind exact proposed bytes and source revision; full-file diffs, serialized rechecks, external private backups, atomic replacement, separate Git result, guarded retry, no push. External writers remain outside app-lock coordination. | Reviewed atomic writes and local-only Git delivered; configure backup storage and coordinate external writers. |
-| Scanning | Explicit all/subnet/range/IP scopes and full/known-only/discovery-only modes; declared-network validation, overlap deduplication, streamed IPv4 iteration, `/31`/`/32`, 128 concurrent checks, configurable 100/s admission, direct large-scan confirmation, cancellation, sparse observations and compact completed coverage. | Phase 6 adds search/filtering, progressive updates, DHCP context, and reviewed discovery-to-host workflow. |
-| Scheduling | Disabled-by-default interval/daily/weekly schedules, explicit IANA timezone, DST gap/fold handling, current-file dispatch validation, coalesced triggers, admin UI, and restart without catch-up floods. | Freshness display policy and phase-6 workflow remain. |
-| Results | Raw observations reconcile per address; undocumented responders are visible with timestamps; latest completed discovery coverage is compact and replaces overlap. | DHCP context, discovery review, and age/schedule-based freshness remain phase 6. |
-| Storage | SQLite schema 4 retains observations, coverage, schedules, bounded jobs, hashed sessions, and expiring OIDC transactions. | Retention defaults remain configurable. |
-| UI scale | Address and outlier views render bounded pages with direct IPv4 arithmetic. Scan scope/mode, confirmation, progress summaries, cancellation, and administrator schedule controls are available. | Search/filtering, HTMX progress refresh, discrepancy filters, and complete web acceptance remain phase 6. |
-| Authentication | Verified expiring/revocable opaque sessions, CSRF, server-side roles, and CLI-only emergency provisioning/recovery. Scan actions are editor-only; schedules are administrator-only. | Phase-6 routes and workflows must enforce the same policies. |
-| SSO | OIDC discovery, code/PKCE flow, signed RS256 ID-token validation, and explicit claim-to-role mapping. | Supply real provider/redirect/mapping configuration at deployment. |
-| Access/settings/audit | Anonymous view defaults off; optional viewing is read-only; admin-only redacted settings/audit, explicit proxy trust, private settings writes, bounded audit rotation, and administrator-only schedule management. | Real provider/proxy/path settings are deployment-specific. |
-| Lifecycle | Explicit factory/lifespan initialization and awaited scan/storage/audit cleanup. | Foundation delivered; one worker required. |
-| Tests | Phase 5 adds deterministic coverage for streamed targets, rate/concurrency bounds, confirmation, sparse coverage, schedule persistence, coalescing, and DST. | Phase-6 UI/deployment acceptance remains. |
+| Area | Delivered behavior |
+| --- | --- |
+| Inventory and writes | Compatible grouped IPv4 inventory, preserved host YAML, diagnostics, outliers, and revision-bound reviewed atomic host edits/imports. |
+| Access | Verified OIDC/local sessions, CSRF, server-side roles, optional read-only anonymous browsing, audit, and CLI-only emergency administration. |
+| Scanning | Bounded streamed scans for declared IPv4 scope/modes; sparse observations, progress/cancellation, exact DNS/MAC reconciliation, coverage, and disabled-by-default DST-aware schedules. |
+| Browsing | Bounded address/outlier/host pages; sparse IP/hostname search and discrepancy filters; HTMX polling of protected read-only job fragments. |
+| Freshness and discovery | Schedule-aware age limits (or 24-hour manual-only default), administrator override, declared DHCP-pool membership context (not leases), and editor-reviewed discovery proposals through the host-write preview/apply workflow. |
+| Deployment | Single-worker container and host TLS-proxy example with persistent local storage, protected configuration, network/OIDC/Git guidance, recovery, and external-writer coordination. |
+| Retention | Latest observations, 100 terminal job summaries, 20 inventory backups, and 10 MiB audit rotation with five rotated files plus the active file; configurable where supported. |
+
+UI and simulated-probe tests use temporary storage. Deployment-specific OIDC and
+real network permissions still require operator verification.
 
 ## Deployment configuration still required
 

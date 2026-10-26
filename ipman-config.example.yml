@@ -11,6 +11,9 @@ sqlite_path: ./ipman.sqlite3
 backup_dir: ../ipman-backups
 backup_retention: 20
 completed_job_retention: 100
+# Evidence age limit in seconds; null uses twice the fastest applicable enabled
+# schedule interval (calendar occurrences respect timezone/DST), or 24h if none.
+freshness_seconds: null
 scan_concurrency: 128
 # Maximum address-check starts per second (not individual packets).
 scan_start_rate: 100.0

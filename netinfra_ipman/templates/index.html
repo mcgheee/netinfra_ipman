@@ -9,55 +9,45 @@
 </section>
 {% endif %}
 <section class="tabs">
-  {% for subnet in subnets %}
-    <a class="tab {% if subnet.cidr == selected %}active{% endif %}" href="/?subnet={{ subnet.cidr }}">{{ subnet.label }}</a>
-  {% endfor %}
+  {% for subnet in subnets %}<a class="tab {% if subnet.cidr == selected %}active{% endif %}" href="/?subnet={{ subnet.cidr }}&amp;q={{ q|urlencode }}&amp;discrepancy={{ discrepancy }}">{{ subnet.label }}</a>{% endfor %}
 </section>
+<form method="get" action="/" class="actions">
+  <input type="hidden" name="subnet" value="{{ selected }}">
+  <label>Search IP or hostname <input name="q" value="{{ q }}"></label>
+  <label>Discrepancies <select name="discrepancy">
+    <option value="all" {% if discrepancy == 'all' %}selected{% endif %}>All addresses</option>
+    <option value="issues" {% if discrepancy == 'issues' %}selected{% endif %}>Mismatches, conflicts, responders</option>
+    <option value="stale" {% if discrepancy == 'stale' %}selected{% endif %}>Stale or unchecked</option>
+  </select></label>
+  <button>Apply</button>
+</form>
 {% if selected %}
 <section class="actions">
   {% if user and user.can_edit %}
-  <form method="post" action="/refresh">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <input type="hidden" name="subnet" value="{{ selected }}">
-    <button>Refresh status</button>
-  </form>
+  <form method="post" action="/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="subnet" value="{{ selected }}"><button>Refresh status</button></form>
   <form method="post" action="/scan">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label>Scope
-      <select name="scope">
-        <option value="all">All declared subnets</option>
-        <option value="subnet" {% if selected %}selected{% endif %}>One subnet</option>
-        <option value="range">Inclusive IP range</option>
-        <option value="ip">One IP</option>
-      </select>
-    </label>
-    <label>Target (CIDR, IP range, or IP)
-      <input name="target" value="{{ selected or '' }}" placeholder="{{ selected or '192.0.2.0/24 or 192.0.2.10 - 192.0.2.20' }}">
-    </label>
-    <label>Mode
-      <select name="mode">
-        <option value="full">Full (known checks and discovery)</option>
-        <option value="known-only">Known IP checks only</option>
-        <option value="discovery-only">Discovery only</option>
-      </select>
-    </label>
-    <button>Start scan</button>
-    <p>Scans above {{ scan_threshold }} addresses require a separate confirmation. All CIDR sizes are supported; large scans may take time.</p>
+    <label>Scope <select name="scope"><option value="all">All declared subnets</option><option value="subnet" selected>One subnet</option><option value="range">Inclusive IP range</option><option value="ip">One IP</option></select></label>
+    <label>Target (CIDR, IP range, or IP) <input name="target" value="{{ selected }}" placeholder="{{ selected }}"></label>
+    <label>Mode <select name="mode"><option value="full">Full (known checks and discovery)</option><option value="known-only">Known IP checks only</option><option value="discovery-only">Discovery only</option></select></label>
+    <button>Start scan</button><p>Scans above {{ scan_threshold }} addresses require separate confirmation.</p>
   </form>
-  {% else %}<p>{% if user %}Editor permission is required to run network checks.{% else %}Log in to run network checks.{% endif %}</p>
-  {% endif %}
+  {% else %}<p>{% if user %}Editor permission is required to run network checks.{% else %}Log in to run network checks.{% endif %}</p>{% endif %}
 </section>
 {% include "inventory_table.html" %}
 <nav class="pagination" aria-label="Address pages">
-  {% if page > 1 %}<a href="/?subnet={{ selected|urlencode }}&amp;page={{ page - 1 }}">Previous</a>{% endif %}
-  <span>Page {{ page }} of {{ pages }} (up to 256 addresses per page)</span>
-  {% if page < pages %}<a href="/?subnet={{ selected|urlencode }}&amp;page={{ page + 1 }}">Next</a>{% endif %}
+  {% if page > 1 %}<a href="/?subnet={{ selected|urlencode }}&amp;q={{ q|urlencode }}&amp;discrepancy={{ discrepancy }}&amp;page={{ page - 1 }}">Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}{% if q or discrepancy != 'all' %} (sparse matching addresses){% else %} (up to 256 addresses per page){% endif %}</span>
+  {% if page < pages %}<a href="/?subnet={{ selected|urlencode }}&amp;q={{ q|urlencode }}&amp;discrepancy={{ discrepancy }}&amp;page={{ page + 1 }}">Next</a>{% endif %}
 </nav>
 {% endif %}
-<section>
-  <h2>Scan jobs</h2>
-  {% for job in jobs %}
-    <div class="job"><strong>{{ job.scope }}{% if job.target %}: {{ job.target }}{% endif %}</strong> {{ job.mode }} {{ job.status }} {{ job.progress }}/{{ job.total }}{% if job.error %}<span>{{ job.error }}</span>{% endif %}{% if user and user.can_edit and job.status in ['queued', 'running'] %}<form method="post" action="/scan/{{ job.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button>Cancel</button></form>{% endif %}</div>
-  {% else %}<p>No scan jobs yet.</p>{% endfor %}
+<section><h2>Scan jobs</h2>
+{% for job in jobs %}
+  <div class="job" {% if job.status in ['queued', 'running'] %}hx-get="/jobs/{{ job.id }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+    <strong>{{ job.scope }}{% if job.target %}: {{ job.target }}{% endif %}</strong> {{ job.mode }} {{ job.status }} {{ job.progress }}/{{ job.total }}{% if job.error %}<span>{{ job.error }}</span>{% endif %}
+    {% if job.status == 'completed' and job.mode in ['full', 'discovery-only'] %}<a href="/discoveries">Review discovery results</a>{% endif %}
+    {% if user and user.can_edit and job.status in ['queued', 'running'] %}<form method="post" action="/scan/{{ job.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button>Cancel</button></form>{% endif %}
+  </div>
+{% else %}<p>No scan jobs yet.</p>{% endfor %}
 </section>
 {% endblock %}

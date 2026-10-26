@@ -1,6 +1,6 @@
 # NetInfra IPAM v1 implementation plan
 
-Phases 1–5 are implemented; phase 6 remains pending. Design policies and initial
+All six implementation phases are implemented. Design policies and initial
 operational defaults are approved; environment-specific values are supplied at
 deployment time.
 
@@ -266,10 +266,19 @@ The interface remains responsive during large streamed scans.
 The complete test suite uses temporary files and simulated probes; isolated
 running-app checks exercise the changed web paths without scanning a live network.
 
-Phase 4 reviewed host writes and phase 5 scan/schedule behavior are implemented;
-do not reintroduce direct writes, unsigned-cookie authentication, automatic Git
-push, or unbounded scans. Phase 6 remains: search/filtering, HTMX progress refresh,
-DHCP-pool context, discovery-to-host review, age-based freshness, and deployment
-documentation/acceptance. Before connecting a production NetInfra file, validate
-deployment paths, backup retention, OIDC, DNS views, persistent storage, and scan
-limits.
+Phase 4 reviewed host writes and phase 5 scan/schedule behavior remain required
+invariants; do not reintroduce direct writes, unsigned-cookie authentication,
+automatic Git push, or unbounded scans. Phase 6 adds sparse inventory
+search/filtering, HTMX job-progress refresh, declared DHCP-pool context, reviewed
+discovery proposals, schedule-aware observation freshness, and single-server
+deployment documentation. Production use still requires validating deployment
+paths, backup retention, OIDC, DNS views, persistent storage, and scan limits.
+
+Verification: the full suite passes 654 tests with one Starlette/httpx TestClient
+deprecation warning. Targeted phase-six web tests cover search, DHCP context,
+reviewed discovery apply, and terminal progress polling. A temporary Uvicorn/browser
+smoke rendered search/freshness, and a temporary-app workflow rendered and applied
+a reviewed proposal without direct-write bypass. No live probes or external IdP
+were used. Compose/container execution was unavailable because Docker is not
+installed; validate deployment artifacts and production identity/network
+configuration at rollout.

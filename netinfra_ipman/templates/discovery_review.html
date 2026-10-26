@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Review discovery for {{ ip }}</h2>
+<p>Observed responder at {{ checked_at or 'unknown time' }}. This is not ownership verification or a DHCP lease.</p>
+{% if preview.findings %}<section class="banner error"><ul>{% for finding in preview.findings %}<li>{{ finding }}</li>{% endfor %}</ul></section>{% else %}
+<pre>{{ preview.diff }}</pre>
+<form method="post" action="/discoveries/apply">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="token" value="{{ preview.token }}">
+  <button>Apply reviewed host proposal</button>
+</form>
+{% endif %}
+{% endblock %}

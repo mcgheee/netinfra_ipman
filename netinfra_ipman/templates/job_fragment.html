@@ -1,0 +1,6 @@
+<div class="job" {% if job.status in ['queued', 'running'] %}hx-get="/jobs/{{ job.id }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <strong>{{ job.scope }}{% if job.target %}: {{ job.target }}{% endif %}</strong>
+  {{ job.mode }} {{ job.status }} {{ job.progress }}/{{ job.total }}
+  {% if job.error %}<span>{{ job.error }}</span>{% endif %}
+  {% if user and user.can_edit and job.status in ['queued', 'running'] %}<form method="post" action="/scan/{{ job.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button>Cancel</button></form>{% endif %}
+</div>

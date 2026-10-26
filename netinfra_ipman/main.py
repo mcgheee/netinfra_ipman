@@ -22,8 +22,9 @@ from .audit import AuditLogger, source_ip as audit_source_ip
 from .persistence import RuntimeStore
 from .checks import reconcile
 from .config import AppConfig, SECRET_FIELDS, load_config, public_settings, save_config
-from .hostwrites import HostWriteError, HostWriteService
+from .freshness import observation_freshness, dhcp_pool_context
 from .models import Inventory
+from .hostwrites import HostWriteError, HostWriteService
 from .netinfra import (
     NetInfraError,
     load_inventory,
@@ -183,14 +184,69 @@ def address_row(ip: str, inventory: Inventory, config: AppConfig, store: Runtime
             "mac_found": None, "mac_ok": None, "dns_checks": [],
             "source_revision": observation.get("source_revision") if observation else None,
         }
-    return {"group": group, "status": status}
+    freshness = observation_freshness(ip, inventory, config, store, observation)
+    if freshness["stale"] and observation is not None:
+        if isinstance(status, dict):
+            reason = status["reason"]
+            if reason != "Undocumented responder":
+                status["reason"] = "Stale evidence"
+                status["severity"] = "neutral"
+                status["tooltip"] = freshness["reason"] + " " + status["tooltip"]
+        elif status.reason != "Configuration conflict":
+            status.state = "stale"
+            status.reason = "Stale evidence"
+            status.severity = "neutral"
+            status.tooltip = freshness["reason"] + " " + status.tooltip
+    return {
+        "group": group, "status": status, "freshness": freshness,
+        "dhcp_pools": dhcp_pool_context(ip, inventory),
+    }
 
 
 PAGE_SIZE = 256
 
 
-def subnet_rows(cidr: str, inventory: Inventory, config: AppConfig, store: RuntimeStore, page: int) -> tuple[list[dict[str, Any]], int]:
+def subnet_rows(
+    cidr: str, inventory: Inventory, config: AppConfig, store: RuntimeStore,
+    page: int, *, query: str = "", discrepancy: str = "all",
+) -> tuple[list[dict[str, Any]], int]:
+    if discrepancy not in {"all", "issues", "stale"}:
+        raise HTTPException(status_code=400, detail="Invalid discrepancy filter")
     network = declared_scope(cidr, inventory)
+    query = query.strip().casefold()
+    if query or discrepancy != "all":
+        # Sparse mode considers documented addresses and stored responders only.
+        candidates = set(inventory.groups)
+        candidates.update(store.observation_ips())
+        matches = []
+        for ip in sorted(candidates, key=IPv4Address):
+            if IPv4Address(ip) not in network:
+                continue
+            row = address_row(ip, inventory, config, store)
+            group = row["group"]
+            searchable = " ".join(
+                (ip, *(group.hostnames if group else ()), *(group.dns_names if group else ()))
+            ).casefold()
+            status = row["status"]
+            if query and query not in searchable:
+                continue
+            if discrepancy == "issues":
+                reason = status["reason"] if isinstance(status, dict) else status.reason
+                if reason not in {
+                    "Mismatch", "Configuration conflict", "Undocumented responder", "Incomplete evidence",
+                }:
+                    continue
+            elif discrepancy == "stale":
+                stale = row["freshness"]["stale"] or (
+                    not isinstance(status, dict) and status.state == "stale"
+                )
+                if not stale:
+                    continue
+            matches.append(row)
+        pages = max(1, (len(matches) + PAGE_SIZE - 1) // PAGE_SIZE)
+        if page > pages:
+            raise HTTPException(status_code=404, detail="Address page does not exist")
+        return matches[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], pages
     total = network.num_addresses if network.prefixlen >= 31 else network.num_addresses - 2
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     if page > pages:
@@ -205,13 +261,17 @@ def subnet_rows(cidr: str, inventory: Inventory, config: AppConfig, store: Runti
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, subnet: str | None = None, page: int = Query(1, ge=1), user: Principal | None = Depends(require_viewer)):
+async def index(
+    request: Request, subnet: str | None = None, page: int = Query(1, ge=1),
+    q: str = "", discrepancy: str = "all",
+    user: Principal | None = Depends(require_viewer),
+):
     services = request.app.state.services
     config, store, scanner = services.config, services.store, services.scanner
     inventory, errors = load_state(config)
     subnets = inventory.subnets if inventory else []
     selected = subnet or (subnets[0].cidr if subnets else None)
-    rows, pages = subnet_rows(selected, inventory, config, store, page) if selected and inventory else ([], 1)
+    rows, pages = subnet_rows(selected, inventory, config, store, page, query=q, discrepancy=discrepancy) if selected and inventory else ([], 1)
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -226,8 +286,80 @@ async def index(request: Request, subnet: str | None = None, page: int = Query(1
             "jobs": scanner.as_dicts(),
             "user": user,
             "scan_threshold": config.manual_scan_confirmation_threshold,
+            "q": q,
+            "discrepancy": discrepancy,
         },
     )
+
+
+@router.get("/jobs/{job_id}", response_class=HTMLResponse)
+async def job_fragment(request: Request, job_id: str, user: Principal | None = Depends(require_viewer)):
+    job = request.app.state.services.store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scan job does not exist")
+    return templates.TemplateResponse(request, "job_fragment.html", {"job": job, "user": user})
+
+@router.get("/discoveries/{ip}/review", response_class=HTMLResponse)
+async def discovery_review(request: Request, ip: str, user: Principal = Depends(require_editor)):
+    try:
+        address = IPv4Address(ip)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Invalid discovery address") from exc
+    services = request.app.state.services
+    inventory, errors = load_state(services.config)
+    address_text = str(address)
+    observation = services.store.get(f"observation:{address_text}")
+    if inventory is None or not inventory.contains(address_text) or address_text in inventory.groups:
+        raise HTTPException(status_code=409, detail="Discovery is no longer an undocumented declared address")
+    if not observation or observation.get("ping_ok") is not True:
+        raise HTTPException(status_code=409, detail="No responding discovery evidence is available")
+    _, revision = await asyncio.to_thread(host_document, services.config)
+    name = f"discovered-{address_text.replace('.', '-')}"
+    proposed = yaml_text({"Name": name, "Records": [{"ZoneName": "example.invalid", "Target": address_text}]})
+    preview = await asyncio.to_thread(services.hostwrites.preview, user.subject, revision, "create", proposed)
+    return templates.TemplateResponse(request, "discovery_review.html", {
+        "user": user, "ip": address_text, "checked_at": observation.get("checked_at"),
+        "preview": preview,
+    })
+
+
+@router.post("/discoveries/apply", response_class=HTMLResponse)
+async def discovery_apply(request: Request, token: str = Form(...), user: Principal = Depends(require_editor)):
+    services = request.app.state.services
+    result = await asyncio.to_thread(services.hostwrites.apply, user.subject, token)
+    services.audit.record(user.subject, source_ip(request), "host_create", "Reviewed discovery host proposal applied")
+    return templates.TemplateResponse(request, "write_result.html", {"user": user, "result": result})
+
+
+
+@router.get("/discoveries", response_class=HTMLResponse)
+async def discoveries(
+    request: Request, page: int = Query(1, ge=1), user: Principal | None = Depends(require_viewer),
+):
+    services = request.app.state.services
+    inventory, errors = load_state(services.config)
+    start = (page - 1) * PAGE_SIZE
+    stop = start + PAGE_SIZE
+    total = 0
+    rows = []
+    if inventory:
+        for ip in services.store.observation_ips():
+            observation = services.store.get(f"observation:{ip}")
+            if not observation or observation.get("ping_ok") is not True or not inventory.contains(ip) or ip in inventory.groups:
+                continue
+            if start <= total < stop:
+                rows.append({
+                    "ip": ip, "checked_at": observation.get("checked_at"),
+                    "dhcp_pools": dhcp_pool_context(ip, inventory),
+                })
+            total += 1
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page > pages:
+        raise HTTPException(status_code=404, detail="Discovery page does not exist")
+    rows.sort(key=lambda row: IPv4Address(row["ip"]))
+    return templates.TemplateResponse(request, "discoveries.html", {
+        "user": user, "rows": rows, "errors": errors, "page": page, "pages": pages,
+    })
 
 
 @router.get("/outliers", response_class=HTMLResponse)
@@ -574,7 +706,9 @@ async def options_save(request: Request, user: Principal = Depends(require_admin
             continue
         value = form[key]
         try:
-            if isinstance(current, bool):
+            if key == "freshness_seconds":
+                setattr(config, key, None if not str(value).strip() else float(value))
+            elif isinstance(current, bool):
                 if value not in {"on", "off"}:
                     raise ValueError("Invalid boolean")
                 setattr(config, key, value == "on")

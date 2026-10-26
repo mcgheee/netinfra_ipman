@@ -44,7 +44,10 @@
       {% if status.source_revision %}<details><summary>Source revision</summary><code>{{ status.source_revision }}</code></details>{% endif %}
     {% else %}No observations{% endif %}
   </td>
-  <td><span class="dot {{ severity }}"></span><strong>{{ status.reason }}</strong><p>{{ status.tooltip }}</p></td>
+  <td><span class="dot {{ severity }}"></span><strong>{{ status.reason }}</strong><p>{{ status.tooltip }}</p>
+      {% for pool in row.dhcp_pools %}<div>{{ pool.explanation }} {{ pool.subnet }} pool {{ pool.pool }}</div>{% endfor %}
+      {% if row.freshness %}<div>Freshness: {{ row.freshness.reason }}</div>{% endif %}
+  </td>
 </tr>
 {% else %}<tr><td colspan="5">No addresses in this view.</td></tr>{% endfor %}
 </tbody>

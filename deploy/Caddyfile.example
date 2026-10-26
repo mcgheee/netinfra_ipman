@@ -1,3 +1,10 @@
+# Run Caddy on the same host as the host-networked app.
+# Replace this name with your real DNS name; Caddy obtains/renews TLS certificates.
 ipman.example.com {
+  # Access logging is intentionally disabled: OIDC callback queries contain codes.
+  # Do not add "log" or enable debug/request-body logging without safe redaction.
+  request_body {
+    max_size 2MB
+  }
   reverse_proxy 127.0.0.1:8000
 }
